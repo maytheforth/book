@@ -2,6 +2,7 @@
 #include<iostream>
 #include<utility>
 #include<memory>
+#include<initializer_list>
 
 namespace may
 {
@@ -33,6 +34,7 @@ namespace may
 		listNode<T>* tail;
 	public:
 		linkedlist();
+		linkedlist(const std::initializer_list<T> & v);
 		~linkedlist() {};
 		 bool isEmpty();
 		 int size();
@@ -49,6 +51,18 @@ namespace may
 	{
 		lsize = 0;
 		tail = head.get();
+	}
+    
+	template<typename T>
+	linkedlist<T>::linkedlist(const std::initializer_list<T>& v)
+	{
+		lsize = 0;
+		head.reset(new listNode<T>());
+		tail = head.get();
+		for (auto item : v)
+		{
+			this->append(item);
+		}
 	}
 
 	template<typename T>
@@ -176,7 +190,7 @@ int main()
 {
 	{
 		using namespace may;
-		linkedlist<int> list;
+		linkedlist<int> list{2,3,4,5,6,7,8};
 		list.append(1);
 		list.append(2);
 		list.append(3);
