@@ -17,3 +17,33 @@ c++的次语言有4个，分别为C 、Object-Oriented C++  、template C++ 、 
 运用define定义的常量获得编译错误信息时，可能会带来困惑。
 
 class专属常量，为了将常量的作用域scope限制于class内，必须让它成为class的一个成员，二为了确保此常量至多只有一份实体，必须让它成为一个static成员。
+
+```c++
+class GamePalyer
+{
+private:
+    enum { NumTurns = 5};
+    int scores[NumTurns];
+};
+```
+
+enum hack 的行为比较接近于#define,而非const. 取一个enum的地址就不合法。
+
++ **对于单纯常量，最好以const对象或者enums替换 #defines**
++ **对于形式函数的宏(macros),最好改用inline函数替换 #defines**
+
+---
+
+**条款三：尽可能使用const ( Use const whenever possible)**
+
+关键字const出现在星号左边，表示被指物是常量。出现在星号右边，表示指针自身是常量。
+
+以下两者都是指向一个常量的（不变的）Widget对象。
+
+```c++
+void f1(const Widget* pw);
+void f2(const widget* pw);    
+```
+
+
+
