@@ -1026,3 +1026,121 @@ public:
 >简朴的(非纯) impure virtual 函数具体指定接口继承及缺省实现继承。
 >
 >non-virtual 函数集体指定接口继承以及强制性实现继承。
+
+
+
+---
+
+**条款三十五 : 考虑virtual函数以外的其他选择**
+
+借由Non-Virtual Interface手法实现 Template Method模式。
+
+​    “令客户通过public non-virtual 成员函数间接调用private virtual函数”，称为 non-virtual interface (NVI) 手法 ， 就是所谓的 Template Method设计模式。
+
+ ```c++
+class GameCharacter
+{
+public:
+   int healthValue() const
+   {
+      // 事前工作
+      int retVal = doHealthValue();
+      // 事后工作
+      return retVal;
+   }
+private:
+    virtual int doHealthValue() const
+    {
+        
+    }
+};
+ ```
+
+
+
+借由Function Pointers 实现Strategy模式
+
+```c++
+class GameCharacter;
+int defaultHeadthCalc(const GameCharacter& gc);
+class GameCharacter
+{
+public:
+    typedef int (*HealthCalcFunc)(const GameCharacter&);
+    explicit GameCharacter(HealthCalcFunc hcf = defaultHealthCalc)
+    : healthFunc(hcf)
+    {}
+    int healthValue() const
+    { return healthFunc(*this); }
+};
+```
+
+
+
+借由 tr1::function 完成  strategy模式
+
+`typedef std::tr1::function<int (const GameCharacter&)> HealthCalcFunc;`
+
+**Tips**
+
+>​     virtual函数的替代方案包括NVI手法及 Strategy设计模式的多种形式。NVI手法自身是一个特殊形式的 Template Method 设计模式。
+>
+>​    将机能从成员函数移到class外部函数，带来的一个缺点是，非成员函数无法访问class的non-public成员。
+>
+>​    tr1::function对象的行为就像一般函数指针。这样的对象可接纳“与给定之目标签名式兼容” 的所有可调用物。
+
+
+
+---
+
+
+
+**条款三十六：绝不重新定义继承而来的non-virtual函数**
+
+​      那么何不考虑修改当初的设计，将函数设计成为virtual函数，而且在基类、子类的指针下，同一对象同一方法会呈现两种不同的结果，令人困惑。
+
+
+
+----
+
+
+
+**条款三十七： 绝不重新定义继承而来的缺省参数值**
+
+​      如果缺省参数值是动态绑定，编译器就必须有某种办法在运行期为virtual函数决定适当的参数缺省值。这比目前实行的“在编译期决定” 的机制更慢而且更复杂。 所以编译器选取基类的默认参数值。
+
+​      应采用 NVI的设计
+
+```c++
+class Shape
+{
+public:
+   enum ShapeColor {Red,Green,Blue};
+   void draw(ShapeColor color = Red) const
+   {
+      doDraw(color);
+   }
+private:
+   virtual void doDraw(ShapeColor color) const = 0;     // 真正的工作
+};
+
+class Rectangel:public Shape
+{
+public:
+private:
+    virtual void doDraw(ShapeColor color)  const;    //注意，不需指定缺省参数值。
+}
+```
+
+**Tips**
+
+> 绝对不要重新定义一个继承而来的缺省参数值，因为缺省参数值都是静态绑定，而virtual函数 , 你唯一应该覆写的东西，却是动态绑定。
+
+
+
+---
+
+**条款三十八：通过复合塑模出has-a  或 “根据某物实现出”**
+
+
+
