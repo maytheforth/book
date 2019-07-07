@@ -1142,5 +1142,176 @@ private:
 
 **条款三十八：通过复合塑模出has-a  或 “根据某物实现出”**
 
+>复合(composition) 的意义和 public 继承完全不同。
+>
+>在应用域，复合意味has-a 。 在实现域，复合意味着is-implemented-in-terms-of.
 
 
+
+---
+
+
+
+**条款三十九：明智而审慎地使用private继承**
+
+如果classes之间的继承关系是private,编译器不会自动将一个derived class对象转换为一个base class对象。这和public继承的情况不同。第二条规则是，由private base class 继承而来的所有成员，在derived  class中都会变成private属性，纵使它们在base class 中原本是protected 或 public属性。
+
+大小为零之独立(非附属) 对象，通常c++官方勒令默默安插一个char到空对象内。这个约束不适用于derived class对象内的base class成分。
+
+```c++
+class Empty {}；
+class HoldAnInt {
+private:
+   int x;
+   Empty e;
+};
+```
+
+空对象因为c++官方要求，内含一个char的空间，而由于齐位的要求，HoldAnInt对象中可能增加的是一个int的空间。
+
+而private继承则几乎确定没有额外的空间：
+
+```c++
+class HoldsAnInt: private Empty
+{
+private:
+    int x;
+};
+```
+
+现实中的 EBO(empty base optimization:空白基类最优化) , 往往内含typedefs,enums, static成员变量，或non-virtual函数，在STL 中有广泛的实践。
+
+所处理的class不带任何数据时，这样的classes没有non-static成员变量，没有virtual函数，也没有virtual base classes , 于是这种所谓的empty classes对象不使用任何空间，因为没有任何隶属对象的数据需要存储。
+
+---
+
+
+
+**条款四十：明智而审慎地使用多重继承**
+
+多重继承下，两个base class 有重名的函数，即使一个是private ，一个是public, 但它们的匹配程度是相同的，没有所谓的最佳匹配。
+
+​    为了避免继承得来的成员变量重复，可以采用virtual继承。
+
+```c++
+class File {};
+class InputFile: virtual public File {};
+class OutputFile: virtual public File {};
+class IOFile: public InputFile,public OutputFile {};
+```
+
+ 使用virtual 继承的classes所产生的对象往往比使用non-virtual继承的体积大，访问virtual base classes的成员变量时，也比访问non-virtual base classes的成员变量速度慢。
+
+​    virtual base的初始化责任是由继承体系中的最底层(most derived) class负责。
+
+`class CPerson: public IPerson, private PersonInfo`
+
+>多重继承比单一继承复杂，它会导致新的歧义性，以及对virtual继承的需要。
+>
+>virtual继承会增加大小、速度、初始化(及赋值) 复杂度等等成本。如果virtual base classes不带任何数据，将是最具使用价值的情况。
+>
+>多重继承的确有正当用途。其中一个情节涉及"public继承某个Interface class" 和 “private继承某个协助实现的class”  的两相组合。
+
+
+
+---
+
+
+
+**条款四十一： 了解隐式接口和编译器多态**
+
+“哪一个重载函数该被重载” (发生在编译期) 和 “哪一个virtual函数该被绑定”(发生在运行期)之间的差异。
+
+>classes和 templates 都支持接口(interfaces) 和 多态 (polymorphism) 。
+>
+>对classes而言接口是显式的，以函数签名为中心。多态则是通过virtual函数发生于运行期。
+>
+>对template参数而言，接口是隐式的(implicit), 奠基于有效表达式。多态则通过template具现化和函数重载解析发生于编译期。
+
+---
+
+
+
+**条款四十二：了解typename的双重意义**
+
+template内出现的名称如果相依于某个template参数，称之为从属名称。否则称之为非从属名称。
+
+嵌套从属名称
+
+```c++
+template<typename c >
+void print2nd(const C& container)
+{
+   C::const_iterator* x;
+}
+```
+
+以上代码可以解释为两个变量相乘，所以可能有歧义。
+
+c++ 规定： 如果解析器在template中遭遇一个嵌套从属名称，它便假设这名称不是个类型，除非你告诉它是。
+
+所以 `C:const_iterator iter(container.begin())` 被假设为非类型，需要你告诉它是。
+
+```c++
+template<typename C>
+void print2nd(cosnt C& container)
+{
+   if(container.size() >= 2)
+   {
+      typename C::const_iterator iter(constainer.begin());
+   }
+}
+```
+
+但typename 不可以出现在 base classes list内的嵌套从属类型名称之前，也不可在member initialization list(成员初值列) 中作为base class修饰符。
+
+```c++
+template<typename T>
+class Derived: public Base<T>::Nested {
+public:
+  explicit Derived(int x) : Base<T>::Nested(x)
+  {
+     typename Base<T>::Nested temp;
+  }
+}
+```
+
+>声明template参数时， 前缀关键字class和typename 可互换。
+>
+>请使用关键字typename标识嵌套从属类型名称；但不得在base class lists 或 member initialization list 内以它作为base class修饰符。
+
+---
+
+
+
+**条款四十三： 学习处理模板化基类内的名称**
+
+```c++
+template<typename Company>
+class LoggingMsgSender：public MsgSender<Company>
+{
+public:
+    void sendClearMsg(const MsgInfo& info)
+    {
+       sendClear(info);     // 调用base class函数： 这段代码无法通过编译
+    }
+};
+
+template<>                   // 一个全特化的
+class MsgSender<CompanyZ>    // MsgSender: 它和一般template相同，差别之在于它删掉了sendClear
+{
+public:
+   void sendSecret(const MsgInfo& info) {}
+};
+```
+
+全特化表明，当template实参是CompanyZ时使用这个特定的版本。
+
+因为编译器知道template有可能是全特化的，所以它拒绝寻找继承而来的名称。
+
+有三个办法：
+
+1.   `this->sendClear(info);`      // 成立，假设sendClear将被继承
+2.   使用using 声明式     `using MsgSender<Company>::sendClear;`
+
+3.  明白指出被调用的函数位于base class内    `MsgSender<Company>::sendClear(info);  // 假设sendClear将被继承下来`       但它可能关闭了virtual函数的多态功能。
