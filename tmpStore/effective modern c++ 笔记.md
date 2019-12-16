@@ -60,7 +60,7 @@
    
    lambda只能捕获非static本地变量，成员变量不在其范围内。
 
-         ```
+```c++
 class Widget {
 public:
     void addFilter() const;
@@ -82,7 +82,7 @@ void Widget::addFilter() const
 *	`this` cannot be implicitly captured in this context
 *
 */
-         ```
+```
 
 由上面的例子可以看出，当捕获为 =时，其实我们是捕获了this指针，通过this指针才能访问成员变量。而当捕获this指针时，又可能引发第一个问题。可以的方式为:
 
@@ -235,8 +235,6 @@ auto func = std::bind(test,_1);
 
 ​		c++ thread库比较简陋，没有提供线程优先级和调度策略的方法，可以利用 `native_handle`成员方法来调用平台特定的方法。
 
-
-
 ---
 
 **Item 36: Specify std:launch::async if asynchronicity is essential.**
@@ -274,4 +272,103 @@ inline auto reallyAsync(F&& f, Ts&& ... params)
 >**std::thread objects that have been moved from.**
 >
 >**std::thread that have been joined or been detached.**
+
+```c++
+class ThreadRAII
+{
+public:
+    enum class DtorAction { join,detach};
+    ThreadRAII(std::thread&& t, DtorAction a): action(a),t(std::move(t))
+    {}
+    ~ThreadRAII()
+    {
+        if(t.joinable())
+        {
+        	if(action == DctorAction::join)
+        	{
+        		t.join();
+        	}
+        	else
+         	{
+             	t.detach();
+         	}
+        }
+    }
+    ThreadRAII(ThreadRAII&&) = default;
+    ThreadRAII& operator=(ThreadRAII&&) = default;
+    std::thread& get() {return t;}
+private:
+ 	DtorAction action;
+    std::thread t;
+};
+
+```
+
+注意事项：
+
+1.  `DctorAction`的初始化在`std::thread`之前，因为`std::thread`一旦初始化完成，就可能马上运行，而此时可能`DctorAction`还没有初始化完成。
+2.  可能会担心析构的时候，在判断完`t.joinable()`后，另外一个线程改变了它的状态。但这是不可能的，因为仅有通过调用成员方法能改变线程的状态。而在调用`join(),detach(),move()`之后，该线程马上进入析构状态，而此时其他线程不能在其上调用成员方法。
+
+---
+
+**Item 38 : Be aware of varying thread handle destructor behavior**
+
+​	  异步编程中，caller和callee通过future这一**communications channel**来传递数据，通常的手段是通过  `std::promsise`对象来进行。那么callee产生的对象保存在哪里？
+
+​	   如果保存在callee中，那么当callee结束时，结果肯定会被销毁，不能通过`std::future::get()`来获取结果。如果保存在caller中，那么`std::future`有可能用来创建`std::shared_future`对象，将callee结果的所有权从`std::future`转移到`std::shared_future`中。那么callee结果在最初`std::future`被销毁后依然存在。所以它储存在一个叫 `shared state`的`heap-based object`中。
+
+>The destructor for the last future referring to a shared state for a non-deferred task launched via std::async blocks until the task completes.
+
+---
+
+**Item 39: Consider void futures for one-shot event communication.**	
+
+​	有两个线程, 一个是producer,一个是consumer。现在的情境是需要producer生产完资源，再通知consumer线程进行任务。可以采用条件变量，但问题是：
+
+1.  如果producer在consumer线程wait之前就发出信号，那么consumer线程将永远错过这个信号。
+
+2.  虚假唤醒的问题。consumer线程可能没有办法检测是否条件成功了。
+
+另一种解决办法是利用atomic变量:
+
+```c++
+std::atomic<bool> flag(false);
+// tell reacting task
+flag = true;
+// prepare to react
+while(!flag)
+```
+
+唯一的问题是 reacting task在分给它的时间片里面一直在做无意义的空转，消耗CPU资源。
+
+可以用`void future`来解决这个问题 。 它是有`one-shot`（一次性）的限制的。
+
+```c++
+std::promise<void> p;           // promise for communications channel
+p.set_value();					// tell reacting task
+p.get_future().wait();  		// wait on future    react to event
+```
+
+假设你想要在创造一个线程之后，但在运行它线程方法之前挂起这个线程, 可以用如下的线程：
+
+```c++
+std::promise<void> p;
+void react();                        // func for reacting task
+void detect()
+{
+	std::thread t([]
+                  {
+                     p.get_future().wait();
+                     react();
+                  });
+    p.set_value();
+    t.join();
+}
+```
+
+---
+
+**Item 40: Use std::atomic for concurrency, volatile for special memory**
+
+>Once a std::atomic object has been constructed, operations on it behave as if they were inside a mutex-protected critical section, but the operations are generally implemented using special machine instructions that are more efficient than would be the case if a mutex were employed.
 
