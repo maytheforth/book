@@ -371,4 +371,382 @@ void detect()
 **Item 40: Use std::atomic for concurrency, volatile for special memory**
 
 >Once a std::atomic object has been constructed, operations on it behave as if they were inside a mutex-protected critical section, but the operations are generally implemented using special machine instructions that are more efficient than would be the case if a mutex were employed.
+>
+>**volatile**: In a nutshell, it's for telling compilers that they're dealing with memory that doesn't behave normally.
 
+普通内存的读写有如下的特性：如果你在一个内存的区域写了个值，却从未读取它，然后又第二次对其赋值，那么第一个赋值的行为将被清除。
+
+特殊内存中最常见的就是内存映射I/O，对内存的读写也是一种输入输出，可以控制外部诸如传感器，雷达的行为。
+
+所以, `volatile`的意思是告诉编译器，不要在这段内存上进行任何的优化， 它指向的是特殊的内存。
+
+---
+
+**Item 1 : Understand template type deduction.**
+
+**case 1 : ParamType is a Reference or Pointer, but not a Universal Reference**
+
+1.  如果`expr`是引用类型，那么忽略掉引用部分。
+
+2.  `expr`的类型相对于ParamType的匹配之处来决定T的类型。
+
+**Example:**
+
+```c++
+template<typename T>
+void f(T& param);
+int x = 27;
+const int cx = x;
+const int& rx = x;
+f(x);		//  T int ; paramType  int&
+f(cx);		//  T  const int ; paramType const int&
+f(rx);		//  T  const int ; paramType const int&
+// 传引用时将保留其本身的const属性。
+```
+
+带有右值参数的函数只接受右值，但类型推断没有这方面的限制。
+
+```c++
+template<typename T>
+void f(const T& param);
+int x = 27;
+const int cx = x;
+const int& rx = x;
+f(x);         // T : int   ; paramType: const int&
+f(cx);		  // T : int   ; paramType: const int&
+f(rx);	      // T : int   ; paramType: const int&
+```
+
+**Case 2 :  ParamType is a Universal Reference**
+
+万能引用通常被声明为 `T&&` 。
+
+1.  如果`expr`是左值，那么T 和 ParamType的类型都将被推断为左值引用。
+
+2.   如果`expr`是右值，那么Case 1的规则将被应用。
+
+```c++
+template<typename T>
+void f(T&& param);
+int x = 27;
+const int cx = x;
+const int& rx = x;
+f(x);           // T: int& ; paramType: int&
+f(cx);		    // T: const int& ; paramType: const int&
+f(rx);          // T: const int& ; paramType: const int&
+f(27);			// T: int  ; paramType: int&& 
+```
+
+**Case 3: ParamType is neither a pointer nor a reference**
+
+1.  如果`expr`是引用，忽略引用部分。
+2.   如果`expr`是const 和 volatile， 也要忽略。因为是传值，即使修改也是在新的副本上进行修改。
+
+```c++
+template<typename T>
+void f(T param);
+int x = 27;
+const int cx = x;
+const int& rx = x;
+f(x);                   // both int
+f(cx);					// both int
+f(rx);					// both int
+
+const char* const ptr = "Fun with pointers";   //ptr is const pointer to const object
+f(ptr);                      // pass arg of type const char* const 
+```
+
+`void myFunc(int param[]);` 和 `void myFunc(int* param);`是等效的。
+
+```c++
+const char name[] = "J.p.Briggs";
+const char* ptrToName = name;
+template<typename T>
+void f(T param);
+f(name);			  // T 被推断为 const char*
+
+template<typename T>
+void f1(T& param);		// T 被推断为 const char[13], paramType推断为 const char(&)[13]
+f1(name);
+```
+
+所以在template中可以指明参数为array。
+
+```c++
+template<typename T, std::size_t N>
+constexpr std::size_t arraySize(T (&)[N]) noexcept
+{
+   return N;
+}
+```
+
+---
+
+**Item 2:  Understand auto type dedution.**
+
+auto 推断和template推断几乎等同。
+
+```c++
+auto x  = 27;
+const auto cx = x;
+const auto& rx = x;
+
+// 可等同于
+template<typename T>
+void func_for_x(T param);
+func_for_x(27);
+
+template<typename T>
+void func_for_cx(const T param);
+func_for_cx(x);
+
+template<typename T>
+void func_for_rx(const T& param);
+func_for_rx(x);
+
+
+auto&& uref1 = x;       // x是左值int , 所以 uref1类型为 int&
+auto&& uref2 = cx;      //  cx是左值const int, 所以 uref2类型为const int&
+auto&& uref3 = 27;		// 27是右值， 所以 uref3 类型为 int&&
+
+const char name[] = "R.N.Briggs";       // 类型为 const char[13]
+auto arr1 = name;						// arr1's type is const char*
+auto& arr2 = name;                      // arr2's type is const char (&)[13]
+
+void someFunc(int ,double);         
+auto func1 = someFunc;                  // func1's type is void(*)(int,double)
+auto& func2 = someFunc;					// func2's type is void(&)(int,double)
+```
+
+**例外:**
+
+```c++
+auto x1 = 27;					// type is int , value is 27
+auto x2(27);					// ditto
+auto x3 = {27};				    // type is std::initializer_list<int> value is {27}
+auto x4{27};                    // ditto
+```
+
+当用统一初始化声明变量时，即用{}来声明变量时，推断类型为`std::initializer_list`.
+
+```c++
+auto createInitList()
+{
+  return {1,2,3};         // error : can't deduce type for {1,2,3}
+}
+```
+
+
+
+---
+
+**Item 3 : Understand decltype.**
+
+``` c++
+template<typename Container,typename Index>
+auto authAndAccess(Container& c, Index i) -> decltype(c[i])
+{ 
+   authenticateUser();
+   return c[i];
+}
+
+// 如果写成 decltype(param) test(T param)
+// 那么就会提示错误，因为此时 param 此时还是 undeclared
+
+//
+auto authAndAccess(Container& c, Index i)
+{
+    return c[i];
+}
+authAndAccess(d,5) = 10;    // error, 不能对右值赋值
+
+// 可看成  auto ret = c[i];    那么 auto的推断类型为int, 而c[i]的类型为int&
+
+//--------------------------------------------------------------
+// 可用 decltype(auto) 来进行赋值
+Widget w;
+const Widget& cw = w;
+auto myWidget1 = cw;          // myWidget1的类型为Widget
+decltype(auto) myWidget2 = cw;   // myWidget2的类型是 const Widget&
+```
+
+如果我们需要传入的参数无论为左值还是右值均可，而返回值根据传入参数的类型而变化的话，可以用完美转发：
+
+```c++
+template<typename Container, typename Index>
+decltype(auto) authAndAccess(Container&& c, Index i)
+{
+    authenticateUser();
+    return std::forward<Container>(c)[i];
+}
+```
+
+```c++
+decltype(auto) f2()
+{
+	int x = 0;
+	return (x);
+}
+// (x)返回的是本地变量的引用。
+```
+
+除了变量名之外的类型为`T`的左值表达式，`decltype`推断的类型总是`T&`。
+
+---
+
+**Item 4 :  Know how to view deduced types.**
+
+1.   通过IDE 
+
+2.   利用编译器来进行诊断。
+
+   ```c++
+   template<typename T>               // 仅仅有TD的声明，没有实现
+   class TD;  
+   TD<decltype(x)> xType;
+   TD<decltype(y)> yType;
+   
+   // 然后编译器提示错误，从错误中，我们可以看到x,y的类型
+   /* deduceTest.cpp:24:21: error: implicit instantiation of undefined template 'TD<int>'
+       TD<decltype(x)> xType;
+                       ^
+   deduceTest.cpp:13:7: note: template is declared here
+   class TD;
+         ^
+   */
+   ```
+
+   3.   运行时的输出。
+
+      可以利用boost库
+
+      ```c++
+      #include<boost/type_index.hpp>
+      template<typename T>
+      void f(const T& param)
+      {
+         using std::cout;
+         using boost::typeindex::type_id_with_cvr;
+         cout <<　"T = "
+             	<< type_id_with_cvr<T>().pretty_name()
+              << '\n';
+         cout << "param = "
+              << type_id_with_cvr<decltype(param)>().pretty_name()
+              << '\n';
+      }
+      ```
+
+      ---
+
+      **Item 5: Prefer auto to explicit type declarations**
+
+      `auto`变量必须被初始化。
+
+      `std::function`和`auto`声明的`lambada`函数，如果都关联同一个函数，`auto-declared object`总是比较快和比较小。
+
+      ```c++
+      auto derefUPLess = 
+      	[](const std::unique_ptr<Widget>& p1,
+      	   const std::unique_ptr<Widget>& p2)
+      	   { return *p1 < *p2; }
+      ```
+
+      ```c++
+      std::unordered_map<std::string,int> m;
+      for(const std::pair<std::string,int>& p : m)
+      { 
+      }
+      /* unordered_map的key值是const的，所以在hash table中的变量为 std::pair<const   std::string,int>, 而声明的变量为std::pair<string,int>。所以运行过程中会创建一个临时变量，然后将引用P绑定到这个变量上。
+       */
+      ```
+
+      auto 在重构代码的时候可能有用，比如将返回值从int改为double, 仅仅需要改动`return`语句就可以了。
+
+---
+
+**Item 6: Use the explicitly typed initializer idiom when auto deduces undesired types**
+
+>std::vector::operator[] returns for every type except bool. Instead, it returns an object of type std::vector<bool>::reference.
+
+因为vector中每个bool值用1位来表示，而`vector<T>`的`[]`操作符用来返回一个`T&`值,而c++禁止对bit位的引用。
+
+```c++
+std::vector<bool> features(const Widget& w);
+bool highPriority = features(w)[5];  // 从std::vector<bool>::reference隐式转化为bool
+auto highPriority = features(w)[5];	 // 类型为std::vector<bool>::reference
+```
+
+auto的问题在于有些使用了代理类，例如`shared_ptr`对原始指针进行了包装，但`shared_ptr`比较明显地使用了代理类，而其他则不那么明显。
+
+```c++
+Matrix sum = m1 + m2 + m3 + m4
+// 为了高效的计算，m1 + m2 的返回值类型可能为 sum<Matrix,Matrix>, 所以类似的sum<sum<sum<Matrix,Matrix>,Matrix>,Matrix>, 最后在=的时候隐式转换为 Matrix
+```
+
+```c++
+double calcEpsilon();           // return tolerance value
+float ep = calcEpsilon();       // implicitly convert   double->float
+auto ep = static_cast<float>(calcEpsilon());
+```
+
+
+
++ 不可见的代理类会导致auto推断出错误的类型。
++  显示类型转化可以强制auto推断出你想要的类型。
+
+---
+
+**Item 7 : Distinguish between () and {} when creating objects.**
+
+```c++
+Widget w1;          // call default constructor
+Widget w2 = w1;     // not an assignment; calls copy ctor
+w1 = w2;            // an assignment; calls copy operator=
+```
+
+大括号也可以用来初始化非静态成员变量的默认值。
+
+```c++
+class Widget {
+private:
+	int x{0};				  // fine, x's default value is 0
+	int y = 0;			      // fine
+	int z(0);                 // error
+};
+
+// uncopyable objects can be initialized using braces or parentheses
+std::atomic<int> ai1{0};      // fine
+std::atomic<int> ai2(0);      // fine
+std::atomic<int> ai3 = 0;     // error!
+```
+
+braced initialization禁止隐式的缩窄转换。
+
+```c++
+double x,y,z;
+int sum1{ x + y + z};
+// most vexing parse
+Widget w2();     // a function returns Widget or initialize an object w2
+// braced initialization can forbid it 
+Widget w3{};
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+---
+
+
+
+**Item 23: Understand std::move and std::forward.**
+
+>**Move semantics**  makes it possible for compilers to replace expensive copying operations with less expensive moves.
