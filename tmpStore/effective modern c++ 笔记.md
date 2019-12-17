@@ -731,13 +731,45 @@ Widget w2();     // a function returns Widget or initialize an object w2
 Widget w3{};
 ```
 
+如果有多个重载函数，其中有一个重载参数为`std::initializer_list`的话，braced initialization优先使用`std::initializer_list`的。甚至通常的拷贝构造和移动构造都会被`std::initializer_list`所劫持。
 
+```c++
+class Widget {
+public:
+    Widget(int i,bool b);             
+    Widget(int i,double b);
+    Widget(std::initializer_list<long double> il);
+    operator float() const;
+};
 
+Widget w8{std::move(w4)};        // calls std::initializer_list ctor
+```
 
+有个边缘情况是，如果变量初始化为空的大括号，而且构造函数中包含默认构造函数和`std::initializer_list`构造函数，那么它代表没有参数，还是空的`std::initializer_list`, 也就是说调用哪个构造函数？ 规则是你将调用默认构造函数。如果你想要调用空的`std::initializer_list`的话，那么请用如下的方式：
 
+```c++
+Widget w4({});
+Widget w5{{}};
+```
 
+---
 
+**Item 8: Prefer nullptr to 0 and NULL.**
 
+```c++
+void f(int);        // three overloads of f
+void f(bool);
+void f(void*);
+
+f(0);
+f(NULL);           // 我们本意是想调用f(void*),但是因为NULL被定义为0,所以它实际上调用的是f(int)
+```
+
+nullptr shines especially brightly when  templates enter the picture.
+
+---
+
+**Item 9: Prefer alias declarations to typedefs**
 
 
 
