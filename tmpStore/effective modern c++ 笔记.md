@@ -771,7 +771,7 @@ nullptr shines especially brightly when  templates enter the picture.
 
 **Item 9: Prefer alias declarations to typedefs**
 
-
+别名声明可用于模板，而`typedef`不行。
 
 
 
@@ -782,3 +782,17 @@ nullptr shines especially brightly when  templates enter the picture.
 **Item 23: Understand std::move and std::forward.**
 
 >**Move semantics**  makes it possible for compilers to replace expensive copying operations with less expensive moves.
+
+`std::move`和`std::forward`没有产生任何可执行代码，他们仅仅是做了类型转换。`std::move`无条件将它的参数转化成右值，而`std::forward`只有当条件满足时才执行这个转化。
+
+下面有一个`std::move`的样例实现:
+
+```c++
+template<typename T>
+typename remove_reference<T>::type&&  move(T&& param)
+{
+    using ReturnType = typename remove_reference<T>::type&&;
+    return static_cast<ReturnType>(param);
+}
+```
+
