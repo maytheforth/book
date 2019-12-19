@@ -638,29 +638,29 @@ decltype(auto) f2()
 
       ---
 
-      **Item 5: Prefer auto to explicit type declarations**
+**Item 5: Prefer auto to explicit type declarations**
 
-      `auto`变量必须被初始化。
+  `auto`变量必须被初始化。
 
-      `std::function`和`auto`声明的`lambada`函数，如果都关联同一个函数，`auto-declared object`总是比较快和比较小。
+  `std::function`和`auto`声明的`lambada`函数，如果都关联同一个函数，`auto-declared object`总是比较快和比较小。
 
-      ```c++
-      auto derefUPLess = 
-      	[](const std::unique_ptr<Widget>& p1,
-      	   const std::unique_ptr<Widget>& p2)
-      	   { return *p1 < *p2; }
-      ```
+  ```c++
+  auto derefUPLess = 
+  	[](const std::unique_ptr<Widget>& p1,
+  	   const std::unique_ptr<Widget>& p2)
+  	   { return *p1 < *p2; }
+  ```
 
-      ```c++
-      std::unordered_map<std::string,int> m;
-      for(const std::pair<std::string,int>& p : m)
-      { 
-      }
-      /* unordered_map的key值是const的，所以在hash table中的变量为 std::pair<const   std::string,int>, 而声明的变量为std::pair<string,int>。所以运行过程中会创建一个临时变量，然后将引用P绑定到这个变量上。
-       */
-      ```
+  ```c++
+  std::unordered_map<std::string,int> m;
+  for(const std::pair<std::string,int>& p : m)
+  { 
+  }
+  /* unordered_map的key值是const的，所以在hash table中的变量为 std::pair<const   std::string,int>, 而声明的变量为std::pair<string,int>。所以运行过程中会创建一个临时变量，然后将引用P绑定到这个变量上。
+   */
+  ```
 
-      auto 在重构代码的时候可能有用，比如将返回值从int改为double, 仅仅需要改动`return`语句就可以了。
+  auto 在重构代码的时候可能有用，比如将返回值从int改为double, 仅仅需要改动`return`语句就可以了。
 
 ---
 
@@ -796,3 +796,113 @@ typename remove_reference<T>::type&&  move(T&& param)
 }
 ```
 
+注意： 1.  如果你想要对一个对象做move操作，不要将其声明为`const`。 
+
+​			  2.  `std::move`不仅不做移动操作，而且它也不保证会将对象类型转化成适宜移动的类型。
+
+```c++
+class Annotation {
+public:
+	explicit Annotation(const std::string text): value(std::move(test)) {}
+private:
+    std::string value;
+};
+
+
+class string {
+public:
+   	string(const string& rhs);  //1
+    string(string&& rhs);
+}
+/*
+move函数将test的类型转化为了一个const std::string的右值。因为string的move构造函数只支持非const变量的move操作，所以string调用了第一个左值的构造函数，所以尽管使用了move，依然有拷贝操作。
+
+*/
+```
+> Neither std::move nor std::forward do anything at runtime.
+---
+
+**Item 24: Distinguish universal references from rvalue references.**
+
+万能引用和右值引用的形式都类似于`T&&` 。万能引用通常都出现在有类型推断的场合。
+
+```c++
+template<typename T>
+void test(T&& param);    // a universal reference
+
+auto&& var2 = var1;      // a universal reference
+
+template<typename T>
+void f(std::vector<T>&& param);      // param is an rvalue reference.
+```
+
+一个引用如果想成为万能引用，类型推断是必要的，但却不是充足条件。引用的声明形式必须正确，必须精确的类似于`T&&`。
+
+```c++
+auto timeFuncInvocation = 
+  [](auto&& func,auto&& ... params)
+  {
+  	start timer;
+    std::forward<decltype(func)>(func)(
+        std::forward<decltype(params)>(params)...
+    );
+    stop timer and record elapsed time;
+  }
+```
+
+
+
+---
+
+**Item 25: Use std::move on rvalue references, std::forward on universal references**
+
+
+
+
+
+---
+
+**Item 28: Understand  reference collapsing.**
+
+c++在声明变量的时候不可以定义引用的引用。如 `auto& &rx = x` 不被允许。但是在将参数类型代入`template`进行替换的时候，可能会出现引用的引用。例如:
+
+```c++
+template<typename T>
+void test(T&& param);
+int a = 21;
+int b = &a;
+test(b);
+```
+
+之前提及，此时T的类型推断为`int&`，代入模板则是`int& &&`。而编译器在处理这个问题的时候，会把引用的引用最终折叠到单个引用，这就是引用折叠。引用折叠的规则为:  如果有左值引用存在，那么结果为左值引用。否则都为右值引用。
+
+```c++
+& && -> &                     & & -> &
+&& & -> &				      && && -> &&
+```
+
+引用折叠出现在四种场景中：
+
+1.  模板实例化。
+
+2.  auto变量的类型生成。
+
+   ```c++
+   auto&& a = 5;  //  a的类型为int&&
+   auto& b = a; // --> int& && b   -->  int& b 
+   ```
+
+3.   `typedef`和别名声明的使用过程中。
+
+      ```c++
+template<typename T>
+class Widget{
+public:
+   typedef T&& RvalueRefToT;
+};
+Widget<int&> w;
+typedef int& && RvalueRefToT;
+typedef int& RvalueRefToT;
+    ```
+
+4.  `decltype`的使用过程中。
