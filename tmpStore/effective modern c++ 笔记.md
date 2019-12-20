@@ -856,6 +856,193 @@ auto timeFuncInvocation =
 
 **Item 25: Use std::move on rvalue references, std::forward on universal references**
 
+```c++
+class Widget{
+public:
+	template<typename T>
+	void setName(T&& newName)
+	{
+		name = std::move(newName);
+	}
+private:
+	std::string name;
+	std::shared_ptr<SomeDataStructure> p;
+};
+
+auto n = getWidgetName();         // n is local variable
+w.setName(n);                     // moves n into w!  n's value now unknown;
+```
+
+所以当参数为万能引用的时候，不应该用`std::move`。
+
+任何的函数内部，对形参的直接使用，都是按照左值进行的。
+
+如果某个函数返回值而非引用的话，可以返回右值引用来减少开销：
+
+```c++
+Matrix operator+(Matrix&& lhs,const Matrix& rhs)
+{
+    lhs += rhs;
+    return std::move(lhs);
+}
+```
+
+即使可能返回的类型不支持`moving`操作，将它转成右值也不会有什么后遗症，因为这个右值会被拷贝到拷贝构造函数中，进行拷贝构造。
+
+**RVO和std::move的关系**
+
+[RVO VS std::move](https://www.ibm.com/developerworks/community/blogs/5894415f-be62-4bc0-81c5-3956e82276f3/entry/RVO_V_S_std_move?lang=en)
+
+RVO是一种编译器优化的技术，它要把返回的局部变量直接构造在返回区域的技术, 用来减少拷贝的消耗。
+
+```c++
+class BigObject {
+public:
+	BigObject() {
+	    cout << "constructor " << endl;
+	}
+    ~BigObject() {
+        cout <<　"destructor." << endl;
+    }
+    BigObject(const BigObject&) {
+        cout << "copy constructor." << endl;
+    }
+    BigObject(BigObject&&)
+    {
+        cout << "move constructor" << endl;
+    }
+};
+
+BigObject foo() {
+    BigObject localObj;
+    return localObj;
+}
+BigObject foo1(int n) {
+    BigObject localObj,anotherLocalObj;
+    if(n > 2)
+    {
+        return localObj;
+    }
+    else
+    {
+        return anotherLoalObj;
+    }
+}
+
+int main()
+{
+    BigObject obj = foo();
+    BigObject obj1 = fool(1);
+    return 0;
+}
+```
+
+如果有了if-else语句以后，编译器就不知道返回区域要放哪个值了。
+
+而如果方法改为:
+
+```c++
+BigObject foo() {
+    BigObject localObj;
+    return std::move(localObj);
+}
+```
+
+编译器将不会触发RVO操作。因为触发RVO的要求是返回语句的类型与定义的方法返回值类型一致。而此时定义的返回值类型为`BigObject`，真正返回值的类型为`BigObject&&`,所以没有触发RVO, 但会触发拷贝构造函数。
+
+c++ 标准规定，如果RVO条件满足的话，要么`copy elision`会发生要么隐式地调用`std::move`。所以显示地调用`std::move`是不必须的。
+
+---
+
+**Item 26: Avoid overloading on universal references.**
+
+```c++
+template<typename T>
+void logAndAdd(T&& name);
+void logAndAdd(int index);
+
+short nameIndex;
+logAndAdd(nameIndex);      // 它实际上匹配的是万能引用。
+```
+
+万能引用比较贪婪，它可以匹配绝大多数的参数。如果给一个除了`int`以外的整数形参数，例如(`std::size_t`,`short`,`long`), 那么将会匹配万能引用，而非`int`型重载。
+
+```c++
+class Person{
+public:
+    template<typename T>
+    explict Person(T&& n)
+    : name(std::forward<T>(n)){}
+    Person(const Person& rhs);
+    Person(Person&& rhs);
+}
+
+Person p("Nancy");
+auto cloneOfP(p);        // compile error
+/*
+ 如果调用copy ctor, 需要在Person p上加上const来进行匹配，而调用万能引用无需这种限制。所以万能引用是一个更好的匹配，调用万能引用而非copy ctor.
+*/
+```
+
+完美转发构造函数尤其有问题，它比 non-const左值构造函数能获得更好的匹配，而且会劫持派生类的copy ctor 和 move ctor. 
+
+---
+
+**Item 27: Familiarize yourself with alternatives to overloading on universal references.**
+
+**use tag dispatch**
+
+```c++
+template<typename T>
+void logAndAdd(T&& name)
+{
+  logAndAddImpl(
+  	 std::forward<T>(name),
+     // 因为有些可能传入的是引用，导致is_integral返回false_type,需要去除引用
+  	 std::is_integral<typename std::remove_reference<T>::type>()
+  );
+}
+
+template<typename T>
+void logAndAddImpl(T&& name,std::false_type)
+{
+    names.emplace(std::forward<T>(name));
+}
+
+std::string nameFromIdx(int idx);
+void logAndAddImpl(int idx,std::true_type)
+{
+    logAddAdd(nameFromIdx(idx));
+}
+```
+
+在上述代码中，使用`std::true_type`和`std::false_type`来当做tags区分调用不同的方法。
+
+
+
+**Constraining templates that take universal references**
+
+接下来的例子，我们仅仅在参数类型不为Person的时候才完美转发。
+
+>std::decay<T>::type is the same as T,  except that references and cv-qualifiers(i.e., const or volatile qualifiers) are removed  .
+
+参数不与Person相同的表达式为:
+
+!std::is_same<Person, typename std::decay<T>::type>::value
+
+所以代码如下:
+
+```c++
+class Person {
+public:
+	template<typename T, typename = typename std::enable_if<!std::is_same<Person,
+		typename std::decay<T>::type
+		>::type
+		>
+		explicit Person(T&& n);
+};
+```
+
 
 
 
