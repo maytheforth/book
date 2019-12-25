@@ -1070,9 +1070,19 @@ int main()
 }
 ```
 
+​        在某些复杂的系统中，可能万能引用不只传递了一次，而且在参数的层层转发中，只有当到了最后一层，才会匹配出错，由此提示的出错信息就不是那么直观了。
 
+​		可以使用`static_assert`配合`is_constructible`来检测使用能将某一类型转化成另一类型。
 
-
+```c++
+explici Person(T&& n): name(std::forward<T>(n))
+{
+   static_assert(
+   	std::is_constructible<std::string,T>::value,
+   	"Parameter n can't be used to construct a std::string"
+   );
+}
+```
 
 ---
 
@@ -1120,3 +1130,159 @@ typedef int& RvalueRefToT;
     ```
 
 4.  `decltype`的使用过程中。
+
+
+
+---
+
+**Item 29: Assume that move operations are not persent, not cheap, and not used**
+
+​       不是所有的移动操作都很便宜，需要查看该对象的内部构造。就像对于容器来说，大部分的容器内容储存在堆上，而容器中仅仅保留了指向该堆区域的指针。所以`move`操作很便宜，只需要更新指针就可以了，移动操作仅仅需要常量时间。
+
+​	   但`std::array`对象的元素都储存在对象的内部，所以移动操作需要耗费线性时间，不是那么便宜。
+
+​       另一方面，`std::string `   offers constant-time moves and linear-time copies .  听起来似乎移动操作更便宜。但是许多`string`的实现使用了一种叫`small string optimization(SSO)` 的技术。容量不超过15个字符的短字符串直接储存内容于`string`的内部，而非堆上。此时移动操作并不便宜。
+
+​       有些容器的操作需要确保强异常安全，而`move`操作没有声明`noexcept`，所以`move`操作不可使用。
+
+----
+
+**Item 30: Familiarize yourself with perfect forwarding failure cases.**
+
+```c++
+template<typename... Ts>
+void fwd(Ts&&... params)
+{
+   f(std::forward<Ts>(params)...);
+}
+```
+
+完美转发失败的情况有：
+
+1.  **编译器不能推断出参数的类型**，例如参数为{1,2,3}这种形式。
+
+   如果参数的模板类型没有显示声明`std::initializer_list`的情况下，c++标准禁止推断这种形式。
+
+```c++
+#include<iostream>
+#include<vector>
+using namespace std;
+
+void f(const vector<int>& v)
+{
+    std::cout << "in f" << std::endl;
+}
+
+template<typename T>
+void fwd(T&& param)
+{
+    f(std::forward<T>(param));
+}
+
+int main()
+{
+    /* 
+    使用auto时，li被推断为std::initializer_list,可以完美转发
+    auto li = {1,2,3};
+    fwd(li);
+    */
+    // 下面形式的参数,c++标准禁止推断它的类型。
+    fwd({1,2,3});
+    return 0;
+}
+```
+
+2.  **0或者NULL被当做null pointers传入模板**。
+
+   3. **仅仅声明的整型静态const成员函数**。
+
+      ```c++
+      class Widget {
+      public:
+      	static const std::size_t MinVals = 28;    // MinVal's declaration
+      };
+      std::vector<int> widgetData;
+      widgetData.reserve(Widget::MinVals);
+      ```
+
+      在上述的代码中，`MinVal`仅仅声明了，却没有在类外进行定义。编译器会进行类似预处理的操作，在所有使用到`MinVals`的地方，用28来代替。那么一旦对`Widget::MinVals`进行取地址的操作，会导致`MinVals`去寻找定义，从而链接失败。那么在以下的代码中：
+
+      ```c++
+      void f(std::size_t val);
+      f(Widget::MinVals);			  // find, treated as f(28)
+      fwd(Widget::MinVals);         // error! shouldn't link
+      ```
+
+      完美转发是通过万能引用来转发参数的，万能引用本质上是指针，所以如上调用时会出错。
+      
+      4. **函数参数和模板**
+      
+         ```c++
+         #include<iostream>
+         #include<vector>
+         using namespace std;
+         
+         void test(int val)
+         {
+             std::cout << "in test int" << std::endl;
+         }
+         
+         void test(double val)
+         {
+             std::cout << "in test double" << std::endl;
+         }
+         
+         void f(void (*fp)(int))
+         {
+             std::cout << "in f " << std::endl;
+         }
+         
+         template<typename T>
+         void fwd(T&& param)
+         {
+             f(std::forward<T>(param));
+         }
+         
+         int main()
+         {
+             //f(test);
+             fwd(test);
+             return 0;
+         }
+         ```
+      
+         函数f的声明让编译器知道它需要哪个重载函数。但函数fwd的参数是个万能引用，它对需要的参数一无所知，所以不知道需要哪个重载函数，编译出错。
+
+​                             可以人为地指定函数和函数模板的类型。
+
+```c++
+using Func = void (*)(int);
+Func funcPtr = test;
+
+void f(void (*fp)(int))
+{
+    std::cout << "in f " << std::endl;
+}
+
+template<typename T>
+void fwd(T&& param)
+{
+    f(std::forward<T>(param));
+}
+
+int main()
+{
+    //f(test);
+    fwd(funcPtr);
+    return 0;
+}
+```
+
+5. **位域**
+
+   c++标准规定一个非const的引用无法引用一个位域字段。可以通过拷贝位域的值再进行完美转发。
+
+---
+
+
+
