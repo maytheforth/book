@@ -1284,5 +1284,33 @@ int main()
 
 ---
 
+**Item 18: Use std::unique_ptr for exclusive-ownership resource management.**
 
+unique_ptr自带deleter的例子如下:
+
+```c++
+#include<iostream>
+#include<memory>
+
+using namespace std;
+
+/*
+*	 unique_ptr<int[]> p(new int[3]());
+*
+*
+*/
+
+auto intDeleter = [](int* p)
+{
+    std::cout << "in special delete " << std::endl;
+    delete p; 
+};
+
+int main()
+{
+    unique_ptr<int,decltype(intDeleter)> p{new int(5) , intDeleter};
+    std::cout << *p << std::endl;
+    return 0;
+}
+```
 
