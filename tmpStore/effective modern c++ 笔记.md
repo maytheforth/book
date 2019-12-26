@@ -1314,3 +1314,223 @@ int main()
 }
 ```
 
+---
+
+**Item 19: Use std::shared_ptr for shared-ownership resource management.**
+
+修改引用计数的操作是原子的，所以虽然引用计数通常只有一个字节的大小，但是修改它的代价却很昂贵。
+
+`std::shared_ptr`的`move ctor`因为并没有修改引用计数，所以它比`copy ctor`更快和更便宜。
+
+`std::shared_ptr`和 `std::unique_ptr`类似，可以自定义`dtor` ,但是略微不同。`unique_ptr`的`dtor`是其智能指针的一部分，会改变智能指针的大小，而 `std::shared_ptr`却不是。可以有如下的行为：
+
+```c++
+auto customDeleter1 = [](Widget* pw) {};
+auto customDeleter2 = [](Widget* pw) {};
+std::shared_ptr<Widget> pw1(new Widget,customDeleter1);
+std::shared_ptr<Widget> pw2(new Widget,customDeleter2);
+// 虽然有着不同的deleters,但是被视为同一类型
+std::vector<std::shared_ptr<Widget>> vpw{pw1,pw2};
+```
+
+`std::shared_ptr`结构如下所示:
+
+```c++
+/*
+	   std::shared_ptr<T>
+	   ---------------------|               ------------|
+	   |  Ptr to T	        |-------------->| T Object  |  
+	   |--------------------|               | -----------
+	   |ptr to control block|
+       |--------------------
+                |                              Control Block
+                |--------------------------->|-----------------|
+                                             | Reference Count |
+                                             |-----------------|
+                                             |  Weak Count     |
+                                             |-----------------|
+                                             |  Other Data     |
+                                             | (custom deleter,|
+                                             |  allocator,etc.)|
+                                             |-----------------|
+*/
+```
+
+一个对象的`control block`是指向这个对象的第一个`std::shared_ptr`所创建的。创建`control block`的规则如下：
+
+>+ std::make_shared always creates a control block.
+>
+>+ A control block is created when a std::shared_ptr is constructed from a unique-ownership pointer( i.e.  a std::unique_ptr or std::auto_ptr).
+>+ When a std::shared_ptr constructor is called with a raw pointer , it creates a control block.
+
+所以从原始指针构造一个以上的`shared_ptr`会导致不可预知的后果，因为有多个`control block`控制着同一个原始指针。
+
+```c++
+std::vector<std::shared_ptr<Widget>> processedWidgets;
+class Widget: public std::enable_shared_from_this<Widget> {
+ public:
+    void process();
+};
+void Widget::process()
+{
+    processedWidgets.emplace_back(shared_from_this());
+}
+```
+
+`shared_from_this`查看指向当前对象的`control block`，然后创建一个指向当前`control block`的`std::shared_ptr` 。文中提到`shared_ptr`没有针对数组的操作。如果我们需要用类似于`vector<std::shared_ptr<int>>`的形式，那么容器中保存中`shared_ptr`，意味着shared_ptr不会得到释放，陈硕专门讲过这个问题。
+
+---
+
+**Item 20: Use std::weak_ptr for std::shared_ptr  -- like pointers that can dangle**
+
+`weak_ptr`可用于观察指针指向的对象是否已经被摧毁。
+
+`weak_ptr`不是一个能单独存在的只能指针，他是`shared_ptr`的附庸。用法如下:
+
+```c++
+auto spw = std::make_shared<Widget>();   
+std::weak_ptr<Widget> wpw(spw);       
+spw = nullptr;
+if(wpw.expired())   // std::weak_ptrs that dangle are said to have expired
+{
+}
+
+// The std::shared_ptr is null if the std::weak_ptr has expired
+std::shared_ptr<Widget> spw1 = wpw.lock();
+// if wpw's expired, throw std::bad_weak_ptr
+std::shared_ptr<Widget> spw3(wpw);
+```
+
+观察者模式下也用`std::weak_ptr`。
+
+>In strictly hierarchal data structures such as trees, child nodes are typically owned only by their parents. When a parent node is destroyed, its child nodes should be destroyed,too . Links from parents to children are thus generally best represented by std::unique_ptrs.  Back-links from children to parents can be safely implemented as raw pointers, because a child node should never have a lifetime longer than its parent.
+
+`std::weak_ptr对象的大小与`std::shared_ptr`的大小相同，他们使用相同的`control blocks`。
+
+---
+
+**Item 21:  Prefer std::make_unique and std::make_shared to direct use of new**
+
+因为`make`方法是异常安全的。
+
+```c++
+void processWidget(std::shared_ptr<Widget> spw, int priority);
+// 如果以如下的方式进行调用
+processWidget(std::shared_ptr<Widget>(new Widget), computePriority());
+/* 上述的调用方式中，仅仅要求(new Widget)在 shared_ptr之前运行，而其他的运行顺序没有确定
+   所以可能会有如下的方式：
+   1. new Widget
+   2. computePriority()
+   3. std::shared_ptr的构造函数。
+   当运行computePriority时出现异常，那么就会有内存泄漏的问题出现。
+   std::shared_ptr<Widget> spw(new Widget); 会导致两次的内存申请，一次给Widget，一次给control block.
+   而 auto spw = std::make_shared<Widget>(); 只会有一次的内存申请。它一次性就申请好了足够Widget和control block使用的内存。性能上更加优化。
+*/
+```
+
+但是如果智能指针要用到自定义的`dctor`的话，就不能用make方法。
+
+make方法还有一种限制是:
+
+```c++
+auto upv = std::make_unique<std::vector<int>>(10,20);
+// 到底是10个元素，每个值20的vector, 还是两个元素分别为10,20的vector
+// 这取决于完美转发的时候，是传递(10,20),  还是传递{10,20}。
+// make方法传递的是(10,20)
+```
+
+所以如果我们需要`initializer_list`方式的声明的话，就必须用new的方式进行构造。
+
+​        因为shared_ptr和weak_ptr共用一个control block, 所以当shared_ptr的引用计数为0时，申请的对象被摧毁，但是control block和这个对象占用的空间并没有被释放(如果有weak_ptr引用这个control block的话)， 因为 the same chunk of dynamically allocated memory contains both。所以完全的内存回收是等到最后一个shared_ptr和weak_ptr被摧毁才进行。
+
+​	    所以如果shared_ptr关联的对象占据了很大的内存空间，想尽早释放的话，那么应该用new的方式进行构造。但是正如前面所说，new的方式不是异常安全的。可以利用如下的方式。
+
+```c++
+std::shared_ptr<Widget> spw(new Widget, cusDel);
+processWidget(spw, computePriority());
+
+// 高效的方式可以如下
+processWidget(std::move(spw),computePriority());
+```
+
+
+
+---
+
+**Item 22: When using the Pimpl Idiom, define special member functions in the implementation file. **
+
+Pimpl Idiom指的是头文件和和实现分离(不仅仅是实现，还有private member/functions) , 避免修改了我无法访问的数据而需要重新编译。简易的实现如下:
+
+```c++
+// in header file
+class widget{
+public:
+    widget();
+    ~widget();
+private:
+    class impl;
+    unique_ptr<impl> pimpl;
+};
+
+// in implementation file
+class widget::impl {
+    
+};
+widget::widget(): pimpl{new impl{}} {}
+widget::~widget() {}
+/*
+widget::~widget() = default;       // same effect as above
+*/
+```
+
+在widget的头文件内部定义  
+
+`widget(widget&& rhs) = default;` 
+
+`widget& operator=(widget&& rhs) = default;`
+
+会导致编译出错。因为move操作要求在赋值之前，需要销毁 pImpl指向的对象，二者要求pImpl指向的是一个完整的对象。所以为了解决这个问题，只需要在该段代码生成的时候，pImpl指向的对象是完整的就行。所以只需在头文件里面定义，在cpp文件里面实现就可以了。
+
+但是如果智能指针是shared_ptr，却完全不必管。因为对于std::unique_ptr，deleter是它的一部分，所以编译器可以优化它，生成执行时间更快的代码，但是由此的后果就是unique_ptr指向的对象必须是完整的，当编译器生成的特殊函数(dctor 和 move操作)被使用时。
+
+---
+
+**Item 10: Perfer scoped enums to unscoped enums.**
+
+```c++
+enum Color {black,white,red};
+auto white = false;                // error! white already declared in this scope
+
+enum class Color {black,white,red};
+auto white = false;
+Color c = Color::white;
+```
+
+enum的问题在于它内部的变量能隐式转换成数字类型，而且可以与浮点数进行比较。
+
+而enum class是强类型的，不能进行隐式转化，也不能与其他类型进行比较。
+
+​		 enum在c++98里面不能前置声明的原因是，enum在c++内有其一套潜在的实现方式，比如enum数较少时会用char型，较多时会选择更大的类型。为了让编译器能够极力地优化，编译器需要知道enum的声明，所以不能只定义不声明。而enum class支持前置声明，因此可以减少因enum的修改而重新编译的工作。
+
+可以改写enum class 的 underlying type。
+
+```c++
+enum class Status;             //underlying type is int
+enum class Status: std::uint32_t;
+
+```
+
+有一个地方enum更好用，那就是应对tuple时:
+
+```c++
+using UserInfo = std::tuple<std::string,std::string,std::size_t>;
+UserInfo uInfo;
+
+enum UserInfoFields {uiName, uiEmail, uiReputation};
+auto val = std:get<uiEmail>(uInfo);    
+
+// 换成 enum class
+enum class UserInfoFields {uiName, uiEmail, uiReputation};
+auto val = std::get<static_cast<std::size_t>(UserInfoFields::uiEmail)(uInfo);
+```
+
