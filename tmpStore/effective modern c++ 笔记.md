@@ -1534,3 +1534,149 @@ enum class UserInfoFields {uiName, uiEmail, uiReputation};
 auto val = std::get<static_cast<std::size_t>(UserInfoFields::uiEmail)(uInfo);
 ```
 
+```c++
+template<typename E>
+constexpr auto toUType(E enumerator) noexcept
+{
+   return static_cast<std::underlying_type_t<E>>(enumerator);
+}
+auto val = std::get<toUType(UserInfoFields::uiEmail)>(uInfo);
+```
+
+
+
+----
+
+**Item 11 : Prefer deleted functions to private undefined ones**
+
+当代码试图使用一个成员方法时，c++在deleted状态之前，先检测其accessibility(public,private,protected)。如果试图使用一个deleted private function，那么编译器就会先提示private,不可访问，但其实private不影响它最终不能使用的效果，所以改为public deleted，提示的错误信息会更明显。
+
+deleted function的另一个好处是任何方法都可以被deleted，而不仅仅是成员方法。
+
+```c++
+bool isLucky(int number);
+bool isLucky(char) = delete;
+if(isLucky('a'))                // error! call to deleted function
+```
+
+另一个好处是deleted function可以声明那些被禁止template的类型。
+
+```c++
+template<typename T>
+void processPointer(T* ptr);
+
+template<>
+void processPointer<void>(void*) = delete;
+template<>
+void processPointer<char>(char*) = delete;
+```
+
+>template specializations must be written at namespace scope, not class scope.
+
+```c++
+class Widget {
+public:
+	template<typename T>
+	void processPointer(T* ptr)
+	{ }
+private:
+    template<>
+    void processPointer<void>(void*)     // error!
+};
+
+template<>
+void Widget::processPointer<void>(void*) = delete;   //still public,but deleted
+```
+
+---
+
+**Item 12: Declare overriding functions override.**
+
+为了能重载，`reference qualifiers`必须一模一样。
+
+```c++
+class Widget {
+public:
+	void doWork() &;  // this version of doWork applies only when *this is an lvalue
+	void doWork() &&; // this version of doWork applies only when *this is an rvalue
+};
+
+Widget makeWidget();      // return rvalue
+Widget w;
+w.doWork();               // Widget::doWork &
+makeWidget().doWork();    // Widget::doWork &&
+```
+
+问题是，我们可能本意向覆写父类的某个函数，但因为某些原因写错了参数什么的，其实没有覆写上，反而进行了重载。然而编译器不会进行报错。加上关键字以后，就告诉编译器这个函数我要覆写，让编译器帮你检查。
+
+```c++
+class Derived: public Base {
+public:
+	virtual void mf1() override;
+	virtual void mf2() && override;
+};
+```
+
+```c++
+class Widget{
+public:
+   using DataType = std::vector<double>;
+   DataType& data() { return values;}
+private:
+    DataType values;
+};
+
+auto vals2 = makeWidget().data();      
+// 因为data返回的是一个左值，这要求c++做一个copy的操作。但是makeWidget()返回的是一个临时的对象，拷贝DataType毫无意义。
+// 所以可以如下改写
+
+class Widget{
+  public:
+    using DataType = std::vector<double>;
+    DataType& data() & { return values;}
+    DataType data() && { return std::move(values);}
+  private:
+    DataType values;
+};
+```
+
+
+
+---
+
+**Item 13: Prefer const_iterators to iterators.**
+
+```c++
+// 容器类的非成员方法的begin end
+#include<iostream>
+#include<vector>
+#include<iterator>
+
+int main()
+{
+    std::vector<int> v = {3,1,4};
+    auto vi = std::begin(v);
+    std::cout << *vi << '\n';
+    int a[] = {-5,10,15};
+    auto ai = std::begin(a);
+    std::cout << *ai << '\n';
+    return 0;
+}
+```
+
+
+
+---
+
+**Item 14: Declare functions noexcept if they won't emit exceptions**
+
+异常被抛出后，这期间在栈上构造的所有对象，都会自动析构。析构的顺序与构造的顺序相反。这一过程称为栈的解旋(unwinding).
+
+对于使用noexcept()的情况，不需要生成一堆用于保护堆栈的代码，因为不需要解旋，所以对代码优化友好。
+
+在c++中，所有的内存释放函数和destructors都是隐式的noexcept的。
+
+---
+
+**Item 15: Use constexpr whenever possible**
+
