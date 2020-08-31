@@ -90,7 +90,7 @@
          (let* ([old-env (car record)]
                 [vec (make-vector 1)]
                 [new-env (extend-env (car p-names) vec old-env)]
-                [new-record (cons new-env (append (cdr record) vec))]
+                [new-record (cons new-env (append (cdr record) (list vec)))]
          )
        (extend-helper (cdr p-names) saved-env new-record)
     )
@@ -109,6 +109,7 @@
          )
       (map (lambda (b-var body vec)
              (vector-set! vec 0 (proc-val (procedure b-var body new-env #f)))
+             1
            )
         b-vars bodys vec-list)
       new-env
