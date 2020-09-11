@@ -1,5 +1,4 @@
 #lang eopl
-
 ; ------------------------------------ string->exp ----------------------------------------
 ; scanner
 ; scanner ::= (regexp-and-action ..)
@@ -13,6 +12,7 @@
     (comment (";" (arbno (not #\newline))) skip)
     (identifier (letter (arbno (or letter digit "_" "-" "?"))) symbol)
     (number (digit (arbno digit)) number)
+    (number ("-" digit (arbno digit)) number)
    )
 )
 
@@ -52,10 +52,125 @@
    (expression ("list" "("  (separated-list expression ",")")") list-exp)
    ; 3.12 add "cond"
    (expression ("cond" (arbno "{" expression "==>" expression "}") "end") cond-exp)
+   (expression ("(" expression (arbno expression) ")") call-exp)
+   ; 3.21 change from single argument to multiple arguments 
+   (expression ("proc" "("  (separated-list identifier ",") ")" expression) proc-exp)
+   ; 3.27 traceproc
+   (expression ("traceproc" "(" (separated-list identifier ",") ")" expression) traceproc-exp)
+   ; 3.31 letrec
+   (expression ("letrec" (arbno identifier "(" (separated-list identifier ",") ")" "=" expression ) "in" expression) letrec-exp)
   )
 )
 
 (define scan&parse (sllgen:make-string-parser scanner grammar-a1))
+
+;------------------------------------------define env
+(define empty-env
+ (lambda ()
+   `()
+ )
+)
+
+(define extend-env
+  (lambda (var val saved-env)
+    (cons (list var val) saved-env)
+  )
+)
+
+;     
+; (proc-names)(list-of proc-val)
+(define extend-env-rec
+ (lambda (proc-names bound-vars proc-bodys saved-env)
+   (let ([val (map (lambda (bound-var proc-body) (proc-val (procedure bound-var proc-body saved-env #f))) bound-vars proc-bodys)])
+     (extend-env proc-names val saved-env)
+   )
+ )
+)
+
+
+(define proc-search
+ (lambda (search-var proc-names proc-bodys env nest-env)
+   (if (null? proc-names)
+       (apply-env nest-env search-var)
+       (if (equal? search-var (car proc-names))  ;  
+           (let ([value (expval->proc (car proc-bodys))])
+             (cases proc value
+               (procedure (bound-var body saved-env flag) (proc-val (procedure bound-var body env flag)))
+             )
+           )
+           (proc-search search-var (cdr proc-names) (cdr proc-bodys) env nest-env)
+       )
+   )
+ )
+)
+
+
+
+
+
+
+(define apply-env
+ (lambda (env search-var)
+   (if (null? env)
+       (display "error, no such var")
+       (let* ([var (caar env)]
+              [val (cadar env)]
+              [nest-env (cdr env)])
+         (cond
+           [(list? var) (proc-search search-var var val env nest-env)]
+           [else
+             (if (equal? var search-var)
+               (if (expval->proc? val)
+                   (let ([value (expval->proc val)])
+                     (cases proc value
+                        (procedure (bound-var body saved-env flag) (proc-val (procedure bound-var body env flag)))
+                     )
+                   )
+                   val
+               )
+             (apply-env nest-env search-var)
+            )
+          ]
+         )
+       )
+   )
+ )
+)
+
+
+(define environment?
+ (lambda (env)
+  (or
+   (null? env)
+   (and (pair? env)
+        (symbol? (caar env))
+        (expval? (cadar env))
+        (environment? (cdr env))
+   )
+   (and (pair? env)
+    ((list-of symbol?) (caar env))
+    ((list-of expval?) (cadar env))
+    (environment? (cdr env))
+   )
+  )
+ )
+)
+
+
+(define init-env
+ (lambda()
+   (extend-env
+     `i (num-val 1)
+       (extend-env
+           `v (num-val 5)
+             (extend-env
+                `x (num-val 10)
+                  (empty-env)
+             )
+       )
+    )
+ )
+)
 
 
 ; -------------------------------------- add new grammar -------------------------------------
@@ -98,9 +213,16 @@
   (list-exp (args (list-of expression?)))
   ;exercise 3.12 add cond
   (cond-exp (conditions (list-of expression?)) (actions (list-of expression?)))
-  (if-exp (exp1 expression?) (exp2 expression?) (exp3 expression?))
-  (var-exp (var symbol?))
-  (let-exp (var symbol?) (exp1 expression?) (body expression?))
+ (if-exp (exp1 expression?) (exp2 expression?) (exp3 expression?))
+ (var-exp (var symbol?))
+ (let-exp (var symbol?) (exp1 expression?) (body expression?))
+ ; add proc-exp call-exp
+ (proc-exp (args (list-of symbol?)) (body expression?))
+ (call-exp (rator expression?) (rand (list-of expression?)))
+ ; add traceproc-exp
+ (traceproc-exp (args (list-of symbol?)) (body expression?))
+ ; add letrec
+ (letrec-exp (p-names (list-of symbol?)) (bound-vars (list-of (list-of symbol?))) (p-bodys (list-of expression?)) (letrec-body expression?))
 )
 
 
@@ -109,7 +231,7 @@
  (bool-val (bool boolean?))
  (pair-val (car expval?)(cdr expval?))
  (emptylist-val)
-; (proc-val (proc proc?))
+ (proc-val (proc proc?))
 )
 
 (define list-val
@@ -120,7 +242,6 @@
    )
  )
 )
-
 
 
 (define cond-val
@@ -139,7 +260,6 @@
    )
  )
 )
-
 
 
 ; expval -> int
@@ -192,46 +312,25 @@
  )
 )
 
-
-; empty-env
-(define empty-env
- (lambda ()
-   (lambda (search)
-     (display "error, it's an empty env")
+(define expval->proc
+ (lambda (exp)
+   (cases expval exp
+     (proc-val (proc) proc)
+     (else (display "error, not a proc"))
    )
  )
 )
 
-; extend-env
-(define extend-env
-(lambda (saved-var saved-val saved-env)
- (lambda (search-var)
-   (if (equal? search-var saved-var)
-       saved-val
-       (apply-env saved-env search-var)
+
+(define expval->proc?
+ (lambda (exp)
+   (cases expval exp
+     (proc-val (proc) #t)
+     (else #f)
    )
  )
 )
-)
 
-; apply-env
-(define apply-env
- (lambda (env search-var)
-   (env search-var)
- )
-)
-
-; (define-datatype proc proc?
-;    (procedure (var symbol?) (body expression?) (saved-env environment?))
-; )
-
-;(define apply-procedure
-; (lambda (proc1 val)
-;   (cases proc proc1
-;     (procedure (var body saved-env) (value-of body (extend-env var val saved-env)))
-;   )
-;  )
-;)
 
 
 ;string -> expval
@@ -385,84 +484,76 @@
     (cond-exp (conditions actions)
         (cond-val conditions actions env)
     )
+    (proc-exp (vars body)
+      (proc-val (procedure vars body env #f))
+    )
+    (traceproc-exp (vars body)
+      (proc-val (procedure vars body env #t))
+    )
+    (call-exp (rator rand)
+       (let* ([proc (expval->proc (value-of rator env))]
+              [args (map (lambda(x) (value-of x env))
+				     rand)])
+         (apply-procedure proc args)
+       )
+    )
+    ; add letrec-exp
+    (letrec-exp (p-names b-vars p-bodys letrec-body)
+       (value-of letrec-body (extend-env-rec p-names b-vars p-bodys env))
+    )
   )
  ) 
 )
+; ----------------------------------add procedure
 
-
-(define init-env
- (lambda()
-   (extend-env
-     `i (num-val 1)
-       (extend-env
-           `v (num-val 5)
-             (extend-env
-                `x (num-val 10)
-                  (empty-env)
-             )
-       )
-    )
+(define-datatype proc proc?
+ (procedure 
+   (args (list-of symbol?))
+   (body expression?)
+   (saved-env environment?)
+   (flag boolean?)
  )
 )
 
+(define apply-procedure
+ (lambda (proc1 vals)
+   (cases proc proc1
+     ( procedure (vars body saved-env flag)
+         (if flag (display "traceproc enter\n") `())
+         (let ([x (value-of body (extend-env-with-list vars vals saved-env))])
+           (if flag (display "traceproc exit\n") `())
+           x
+         )
+     )
+   )
+ )
+)
 
-(define test (run "let x = 7
-                   in let y = 2
-                      in let y = let x = -(x,1)
-                                     in -(x,y)
-                      in -(-(x,8),y)
- "))
-; exercise 3.6  add a new operator `minus` that take one argument n , and return -n
-(define test-3.6 (run "minus(-(minus(5),9))"))
+(define extend-env-with-list
+ (lambda (vars vals saved-env)
+   (if (null? vals)
+        saved-env
+        (extend-env-with-list (cdr vars) (cdr vals) (extend-env (car vars) (car vals) saved-env))
+   )
+ )
+)
 
-; exercise 3.7 add operators for addition, multiplication , and integer quotient
-(define add-x (run "+ (3 , 4)"))
-
-(define mult-x (run "let x = 4 in *(x,3)"))
-
-(define div-x (run "/(3 , 2)"))
-
-; exercise 3.8 add equal? , greater?,less?
-(define equal-x (run "equal?(3,2)"))
-
-(define greater-x (run "greater?(3,2)"))
-
-(define less-x (run "less?(3,2)"))
-
-(define empty-x (run "emptylist"))
-
-(define cons-x (run "let x = 4
-                     in cons(x,
-                          cons(cons(-(x,1),emptylist),
-                     emptylist))"
-))
+;----------------------------------------------- run test
 
 
-(define car-x (run "let x = 4
-                     in car(cons(x,
-                           cons(cons(-(x,1),emptylist),
-                     emptylist)))"
-))
+(define letrec-x (run "letrec 
+                         even(x) = if zero?(x) then 1 else (odd -(x,1))
+                         odd(x) = if zero?(x) then 0 else (even -(x,1))
+                       in (odd 13)
+    ")
+)
 
-(define cdr-x (run "let x = 4
-                     in cdr(cons(x,
-                           cons(cons(-(x,1),emptylist),
-                     emptylist)))"
-))
-
-(define null?-x (run "null?(emptylist)" ))
-
-(define list-x (run "let x = 4
-                     in list (x, -(x,1), -(x,3))"
-))
-
-
-; add "cond" test
-(define cond-x (run "let x  = 9
-                       in cond { greater?(x,10)==>  -(x,10)}
-                               { less?  (x,10) ==>  +(x,10)}end "
-))
-
+(define letrec-x1 (run "letrec
+                          addition(x,y) = +(x,y)
+                          interface(x,y) = (addition x y)
+                        in (interface 1 3)
+   ")
+)
 
 
 

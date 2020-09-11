@@ -1,5 +1,4 @@
 #lang eopl
-
 ; ------------------------------------ string->exp ----------------------------------------
 ; scanner
 ; scanner ::= (regexp-and-action ..)
@@ -13,6 +12,7 @@
     (comment (";" (arbno (not #\newline))) skip)
     (identifier (letter (arbno (or letter digit "_" "-" "?"))) symbol)
     (number (digit (arbno digit)) number)
+    (number ("-" digit (arbno digit)) number)
    )
 )
 
@@ -52,10 +52,130 @@
    (expression ("list" "("  (separated-list expression ",")")") list-exp)
    ; 3.12 add "cond"
    (expression ("cond" (arbno "{" expression "==>" expression "}") "end") cond-exp)
+   (expression ("(" expression (arbno expression) ")") call-exp)
+   ; 3.21 change from single argument to multiple arguments 
+   (expression ("proc" "("  (separated-list identifier ",") ")" expression) proc-exp)
+   ; 3.27 traceproc
+   (expression ("traceproc" "(" (separated-list identifier ",") ")" expression) traceproc-exp)
+   ; 3.31 letrec
+   (expression ("letrec" identifier "(" (separated-list identifier ",") ")" "=" expression "in" expression) letrec-exp)
+   (expression ("newref" "(" expression ")") newref-exp)
+   (expression ("deref" "(" expression ")") deref-exp)
+   (expression ("setref" "(" expression "," expression ")") setref-exp)
+   (expression ("begin" expression (arbno ";" expression) "end") begin-exp)
   )
 )
 
 (define scan&parse (sllgen:make-string-parser scanner grammar-a1))
+
+;-----------------------------------------define store
+(define the-store `uninitialized)
+
+(define empty-store
+ (lambda ()
+   `()
+ )
+)
+
+(define get-store
+ (lambda ()
+   the-store
+ )
+)
+
+(define initialize-store!
+  (lambda ()
+    (set! the-store (empty-store))
+  )
+)
+
+(define reference?
+ (lambda (n)
+   (integer? n)
+ )
+)
+
+(define newref
+  (lambda (saved-value)
+     (set! the-store (append the-store (list saved-value)))
+     (- (length the-store) 1)
+  )
+)
+
+(define deref
+ (lambda (n)
+   (if (reference? n)
+       (list-ref the-store n)
+       (eopl:error "this is not a reference " n)
+   )
+ )
+)
+
+(define setref!
+ (lambda (ref saved-value)
+   (letrec ([setref-inner (lambda (store ref)
+       (cond
+         [(null? store) (eopl:error "error, invalid reference")]
+         [(zero? ref) (cons saved-value (cdr store))]
+         [else (cons (car store)(setref-inner (cdr store) (- ref 1)))]
+       )
+       )])
+       (set! the-store (setref-inner the-store ref))
+        )
+   )
+)
+
+
+;------------------------------------------define env
+(define-datatype environment environment?
+ (empty-env)
+ (extend-env
+   (var symbol?)
+   (val (lambda (val)
+        (or (expval? val) (vector? val))
+    )
+   )
+   (env environment?)
+  )
+)
+
+
+(define extend-env-rec
+ (lambda (p-name b-var body saved-env)
+   (let ([vec (make-vector 1)])
+     (let ([new-env (extend-env p-name vec saved-env)])
+       (vector-set! vec 0 (proc-val (procedure b-var body new-env #f)))
+       new-env
+     )
+   )
+ )
+)
+
+
+
+(define apply-env
+ (lambda (env search-var)
+   (cases environment env
+     (empty-env () (display "error, found no such var"))
+     (extend-env (saved-var saved-val saved-env)
+       (if (equal? saved-var search-var)
+             (if (vector? saved-val)
+                 (vector-ref saved-val 0)
+                 saved-val
+             )
+            (apply-env saved-env search-var)
+        )
+      )
+   )
+ )
+)
+
+
+(define init-env
+ (lambda()
+   (empty-env)
+ )
+)
 
 
 ; -------------------------------------- add new grammar -------------------------------------
@@ -98,9 +218,20 @@
   (list-exp (args (list-of expression?)))
   ;exercise 3.12 add cond
   (cond-exp (conditions (list-of expression?)) (actions (list-of expression?)))
-  (if-exp (exp1 expression?) (exp2 expression?) (exp3 expression?))
-  (var-exp (var symbol?))
-  (let-exp (var symbol?) (exp1 expression?) (body expression?))
+ (if-exp (exp1 expression?) (exp2 expression?) (exp3 expression?))
+ (var-exp (var symbol?))
+ (let-exp (var symbol?) (exp1 expression?) (body expression?))
+ ; add proc-exp call-exp
+ (proc-exp (args (list-of symbol?)) (body expression?))
+ (call-exp (rator expression?) (rand (list-of expression?)))
+ ; add traceproc-exp
+ (traceproc-exp (args (list-of symbol?)) (body expression?))
+ ; add letrec
+ (letrec-exp (p-name symbol?) (bound-var (list-of symbol?)) (p-body expression?) (letrec-body expression?))
+ (newref-exp (value expression?))
+ (deref-exp (value expression?))
+ (setref-exp (ref expression?) (value expression?))
+ (begin-exp (first expression?) (second (list-of expression?)))
 )
 
 
@@ -109,7 +240,8 @@
  (bool-val (bool boolean?))
  (pair-val (car expval?)(cdr expval?))
  (emptylist-val)
-; (proc-val (proc proc?))
+ (proc-val (proc proc?))
+ (ref-val (ref reference?))
 )
 
 (define list-val
@@ -121,6 +253,14 @@
  )
 )
 
+(define expval->reference
+ (lambda (exp)
+   (cases expval exp
+     (ref-val (ref) ref)
+     (else (eopl:error "error type to reference"))
+   )
+ )
+)
 
 
 (define cond-val
@@ -139,7 +279,6 @@
    )
  )
 )
-
 
 
 ; expval -> int
@@ -192,46 +331,25 @@
  )
 )
 
-
-; empty-env
-(define empty-env
- (lambda ()
-   (lambda (search)
-     (display "error, it's an empty env")
+(define expval->proc
+ (lambda (exp)
+   (cases expval exp
+     (proc-val (proc) proc)
+     (else (display "error, not a proc"))
    )
  )
 )
 
-; extend-env
-(define extend-env
-(lambda (saved-var saved-val saved-env)
- (lambda (search-var)
-   (if (equal? search-var saved-var)
-       saved-val
-       (apply-env saved-env search-var)
+
+(define expval->proc?
+ (lambda (exp)
+   (cases expval exp
+     (proc-val (proc) #t)
+     (else #f)
    )
  )
 )
-)
 
-; apply-env
-(define apply-env
- (lambda (env search-var)
-   (env search-var)
- )
-)
-
-; (define-datatype proc proc?
-;    (procedure (var symbol?) (body expression?) (saved-env environment?))
-; )
-
-;(define apply-procedure
-; (lambda (proc1 val)
-;   (cases proc proc1
-;     (procedure (var body saved-env) (value-of body (extend-env var val saved-env)))
-;   )
-;  )
-;)
 
 
 ;string -> expval
@@ -244,6 +362,7 @@
 ; program -> expval
 (define value-of-program
  (lambda (pgm)
+   (initialize-store!)
    (cases program pgm
      (a-program (exp1) (value-of exp1 (init-env)))
    )
@@ -385,92 +504,119 @@
     (cond-exp (conditions actions)
         (cond-val conditions actions env)
     )
-  )
- ) 
-)
-
-
-(define init-env
- (lambda()
-   (extend-env
-     `i (num-val 1)
-       (extend-env
-           `v (num-val 5)
-             (extend-env
-                `x (num-val 10)
-                  (empty-env)
-             )
+    (proc-exp (vars body)
+      (proc-val (procedure vars body env #f))
+    )
+    (traceproc-exp (vars body)
+      (proc-val (procedure vars body env #t))
+    )
+    (call-exp (rator rand)
+       (let* ([proc (expval->proc (value-of rator env))]
+              [args (map (lambda(x) (value-of x env))
+				     rand)])
+         (apply-procedure proc args)
        )
     )
+    ; add letrec-exp
+    (letrec-exp (p-name b-var p-body letrec-body)
+       (value-of letrec-body (extend-env-rec p-name b-var p-body env))
+    )
+    (newref-exp (val)
+      (let ([val1 (value-of val env)])
+        (ref-val(newref val1))
+      )
+    )
+    (deref-exp (val)
+      (let ([val1 (value-of val env)])
+         (deref (expval->reference val1))
+      )
+    )
+    (setref-exp (ref value)
+      (let* ([ref1 (value-of ref env)]
+             [value1 (value-of value env)]
+       )
+        (setref! (expval->reference ref1) value1)
+        (num-val 42)
+      )
+    )
+    (begin-exp (first second)
+       (apply-begin (append (list first) second) env)
+    )
+  )
+ )
+ )
+; ----------------------------------add procedure
+
+(define-datatype proc proc?
+ (procedure 
+   (args (list-of symbol?))
+   (body expression?)
+   (saved-env environment?)
+   (flag boolean?)
+ )
+)
+
+(define apply-procedure
+ (lambda (proc1 vals)
+   (cases proc proc1
+     ( procedure (vars body saved-env flag)
+         (if flag (display "traceproc enter\n") `())
+         (let ([x (value-of body (extend-env-with-list vars vals saved-env))])
+           (if flag (display "traceproc exit\n") `())
+           x
+         )
+     )
+   )
+ )
+)
+
+(define apply-begin
+ (lambda (exp-list env)
+   (cond
+     [(null? exp-list) (eopl:error "apply-begin argument should not be empty")]
+     [(equal? (length exp-list) 1) (value-of (car exp-list) env)]
+     [else (begin (value-of (car exp-list) env) (apply-begin (cdr exp-list) env))]
+   )
  )
 )
 
 
-(define test (run "let x = 7
-                   in let y = 2
-                      in let y = let x = -(x,1)
-                                     in -(x,y)
-                      in -(-(x,8),y)
- "))
-; exercise 3.6  add a new operator `minus` that take one argument n , and return -n
-(define test-3.6 (run "minus(-(minus(5),9))"))
 
-; exercise 3.7 add operators for addition, multiplication , and integer quotient
-(define add-x (run "+ (3 , 4)"))
 
-(define mult-x (run "let x = 4 in *(x,3)"))
 
-(define div-x (run "/(3 , 2)"))
+(define extend-env-with-list
+ (lambda (vars vals saved-env)
+   (if (null? vals)
+        saved-env
+        (extend-env-with-list (cdr vars) (cdr vals) (extend-env (car vars) (car vals) saved-env))
+   )
+ )
+)
 
-; exercise 3.8 add equal? , greater?,less?
-(define equal-x (run "equal?(3,2)"))
+;----------------------------------------------- run test
 
-(define greater-x (run "greater?(3,2)"))
+(define test (run "
+                   let g = let counter = newref(0)
+                           in proc(dummy)
+                             begin
+                               setref(counter,-(deref(counter),-1));
+                               deref(counter)
+                             end
+                   in let a = (g 11)
+                       in let b = (g 11)
+                            in -(a,b)
+"))
 
-(define less-x (run "less?(3,2)"))
-
-(define empty-x (run "emptylist"))
-
-(define cons-x (run "let x = 4
-                     in cons(x,
-                          cons(cons(-(x,1),emptylist),
-                     emptylist))"
+(define test1 (run "
+                 let x = newref(newref(0))
+                 in begin
+                    setref(deref(x),11);
+                    deref(deref(x))
+                 end
+"
 ))
 
-
-(define car-x (run "let x = 4
-                     in car(cons(x,
-                           cons(cons(-(x,1),emptylist),
-                     emptylist)))"
-))
-
-(define cdr-x (run "let x = 4
-                     in cdr(cons(x,
-                           cons(cons(-(x,1),emptylist),
-                     emptylist)))"
-))
-
-(define null?-x (run "null?(emptylist)" ))
-
-(define list-x (run "let x = 4
-                     in list (x, -(x,1), -(x,3))"
-))
-
-
-; add "cond" test
-(define cond-x (run "let x  = 9
-                       in cond { greater?(x,10)==>  -(x,10)}
-                               { less?  (x,10) ==>  +(x,10)}end "
-))
-
-
-
-
-
-
-
-
-
-
-
-
+(define test2 (run "
+                let x = newref(0)
+                  in list(x,deref(x),setref(x,11),deref(x))
+"))
