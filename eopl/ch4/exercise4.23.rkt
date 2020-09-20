@@ -10,7 +10,7 @@
 ;
 (define scanner
   '((white-sp (whitespace) skip)
-    (comment (";" (arbno (not #\newline))) skip)
+    (comment ("//" (arbno (not #\newline))) skip)
     (identifier (letter (arbno (or letter digit "_" "-" "?"))) symbol)
     (number (digit (arbno digit)) number)
     (number ("-" digit (arbno digit)) number)
@@ -27,10 +27,19 @@
 
 ; parser
 (define grammar-a1
- '((program (expression) a-program)
+ '((program (statement) a-program)
+   (statement (identifier "=" expression) assign-stmt)
+   (statement ("print" expression) print-stmt)
+   (statement ("{" statement (arbno ";" statement )"}") block-stmt)
+   (statement ("if" expression statement statement ) if-stmt)
+   (statement ("while" expression statement) while-stmt)
+   (statement ("var" identifier (arbno "," identifier) ";" statement ) declare-stmt)
+   (statement ("read" identifier) read-stmt)
    (expression (identifier) var-exp)
    (expression (number) const-exp)
    (expression ("-" "(" expression "," expression ")") diff-exp)
+   (expression ("+" "(" expression "," expression ")") add-exp)
+   (expression ("*" "(" expression "," expression ")") multiply-exp)
    (expression ("zero?" "(" expression ")") zero?-exp)
    (expression ("if" expression "then" expression "else" expression) if-exp)
    (expression ("let" identifier "=" expression "in" expression) let-exp)
@@ -43,6 +52,7 @@
    (expression ("car" "(" expression ")") car-exp)
    (expression ("cdr" "(" expression ")") cdr-exp)
    (expression ("null?" "(" expression ")") null?-exp)
+   (expression ("not" "(" expression ")") not-exp)
    ; add "list"
    (expression ("list" "("  (separated-list expression ",")")") list-exp)
    (expression ("(" expression (arbno expression) ")") call-exp)
@@ -54,7 +64,8 @@
    (expression ("deref" "(" expression ")") deref-exp)
    (expression ("setref" "(" expression "," expression ")") setref-exp)
    (expression ("begin" expression (arbno ";" expression) "end") begin-exp)
-   (expression ("letrec" identifier "(" (separated-list identifier ",") ")" "=" expression "in" expression) letrec-exp)
+   (expression ("letrec" (arbno identifier "(" (separated-list identifier ",") ")" "=" expression ) "in" expression) letrec-exp)
+   (expression ("set" identifier "=" expression) assign-exp)
   )
 )
 
@@ -98,6 +109,36 @@
   )
 )
 
+; return (reflist new-store)
+(define newref-list
+ (lambda (store vallist)
+   (cond
+     [(null? vallist) (eopl:error "vallist should not be null")]
+     [(equal? (length vallist) 1)
+      (let* ([rest (newref store (car vallist))]
+             [rest-ref (car rest)]
+             [rest-store (cdr rest)]
+            )
+        (cons (list rest-ref) rest-store)
+      )
+     ]
+     [else
+       (let* ([rest-left (newref-list store (list (car vallist)))]
+              [rest-left-list (car rest-left)]
+              [rest-left-store (cdr rest-left)]
+              [rest-right (newref-list rest-left-store (cdr vallist))]
+              [rest-right-store (cdr rest-right)]
+              [rest-right-list (car rest-right)]
+             )
+          (cons (append rest-left-list rest-right-list) rest-right-store)
+       )
+     ]
+   )
+ )
+)
+
+
+
 (define deref
  (lambda (store n)
    (if (reference? n)
@@ -126,14 +167,32 @@
   )
 )
 
+(define setref!-list
+ (lambda (store reflist vallist)
+  (cond
+    [(null? reflist) (eopl:error "error, reflist should not be null")]
+    [(equal? (length reflist) 1) (setref! store (car reflist) (car vallist))]
+    [else
+      (let* ([rest (setref! store (car reflist) (car vallist))]
+             [rest-store (cdr rest)]
+            )
+        (setref!-list rest-store (cdr reflist) (cdr vallist))
+      )
+   ]
+  )
+ )
+)
 
 ;------------------------------------------define env
 (define-datatype environment environment?
  (empty-env)
  (extend-env
-   (var symbol?)
+   (var (lambda (var)
+     (or (symbol? var) ((list-of symbol?) var))
+     )
+   ) 
    (val (lambda (val)
-        (or (expval? val) (vector? val))
+        (or (reference? val) ((list-of reference?) val))
     )
    )
    (env environment?)
@@ -141,16 +200,42 @@
 )
 
 
+;(define extend-env-rec
+; (lambda (p-name b-var body saved-env)
+;   (let ([vec (make-vector 1)])
+;     (let ([new-env (extend-env p-name vec saved-env)])
+;       (vector-set! vec 0 (proc-val (procedure b-var body new-env #f)))
+;       new-env
+;     )
+;   )
+; )
+;)
+
 (define extend-env-rec
- (lambda (p-name b-var body saved-env)
-   (let ([vec (make-vector 1)])
-     (let ([new-env (extend-env p-name vec saved-env)])
-       (vector-set! vec 0 (proc-val (procedure b-var body new-env #f)))
-       new-env
-     )
+ (lambda (p-names b-vars bodies saved-env store)
+   (let* ([vals (map (lambda (bound-var proc-body) (proc-val (procedure bound-var proc-body saved-env #f))) b-vars bodies)]
+          [rest (newref-list store vals)]
+          [rest-list (car rest)]
+          [rest-store (cdr rest)]
+          [new-env (extend-env p-names rest-list saved-env)]
+          [new-vals (map (lambda (bound-var proc-body) (proc-val (procedure bound-var proc-body new-env #f))) b-vars bodies)]
+          [new-store (cdr (setref!-list rest-store rest-list new-vals))]
+          )
+      (cons new-env new-store)
    )
  )
 )
+
+(define proc-search
+ (lambda (varlist search-val index)
+   (cond
+     [(null? varlist) #f]
+     [(equal? (car varlist) search-val) index]
+     [else (proc-search (cdr varlist) search-val (+ 1 index))]
+   )
+ )
+)
+
 
 
 
@@ -159,14 +244,23 @@
    (cases environment env
      (empty-env () (display "error, found no such var"))
      (extend-env (saved-var saved-val saved-env)
-       (if (equal? saved-var search-var)
-             (if (vector? saved-val)
-                 (vector-ref saved-val 0)
-                 saved-val
-             )
-            (apply-env saved-env search-var)
-        )
-      )
+       (cond
+          [(list? saved-var)
+            (let ([ret (proc-search saved-var search-var 0)])
+              (if (equal? ret #f)
+                (apply-env saved-env search-var)
+                ret
+              )
+            )
+          ]
+          [else
+            (if (equal? saved-var search-var)
+                saved-val
+                (apply-env saved-env search-var)
+            )
+          ]
+       )
+     )
    )
  )
 )
@@ -182,14 +276,15 @@
 ; -------------------------------------- add new grammar -------------------------------------
 
 (define-datatype program program?
-  (a-program (exp1 expression?))
+  (a-program (stmt statement?))
 )
-
 
 
 (define-datatype expression expression?
  (const-exp (num number?))
  (diff-exp (exp1 expression?) (exp2 expression?))
+ (add-exp (exp1 expression?) (exp2 expression?))
+ (multiply-exp (exp1 expression?) (exp2 expression?))
  (zero?-exp (exp1 expression?))
  (equal?-exp (exp1 expression?) (exp2 expression?))
  (greater?-exp (exp1 expression?) (exp2 expression?))
@@ -210,7 +305,19 @@
  (deref-exp (value expression?))
  (setref-exp (ref expression?) (value expression?))
  (begin-exp (first expression?) (second (list-of expression?)))
- (letrec-exp (p-name symbol?) (bound-var (list-of symbol?)) (p-body expression?) (letrec-body expression?))
+ (letrec-exp (p-names (list-of symbol?)) (bound-vars (list-of (list-of symbol?))) (p-bodies (list-of expression?)) (letrec-body expression?))
+ (assign-exp (var symbol?) (body expression?))
+ (not-exp (exp expression?))
+)
+
+(define-datatype statement statement?
+ (assign-stmt (var symbol?) (body expression?))
+ (print-stmt (body expression?))
+ (block-stmt (first-stmt statement?)(bodies (list-of statement?)))
+ (if-stmt (exp1 expression?) (body1 statement?) (body2 statement?))
+ (while-stmt (exp1 expression?)(body statement?))
+ (declare-stmt (first-var symbol?)(vars (list-of symbol?)) (body statement?))
+ (read-stmt (var symbol?))
 )
 
 
@@ -272,6 +379,19 @@
  )
 )
 
+(define expval->printable
+ (lambda (exp)
+   (cases expval exp
+     (ref-val (ref) (string-append "reference:" (number->string ref)))
+     (num-val (num) num)
+     (bool-val (bool) bool)
+     (emptylist-val () empty)
+     (proc-val (proc) "procedure")
+     (pair-val (left right) (cons (expval->printable left) (expval->printable right)))
+     (else "wrong type")
+   )
+ )
+)
 
 (define expval->reference
  (lambda (exp)
@@ -365,16 +485,26 @@
 (define value-of-program
  (lambda (pgm)
    (cases program pgm
-     (a-program (exp1) (value-of exp1 (init-env) (empty-store)))
+     (a-program (stmt) (result-of stmt (init-env) (empty-store)))
    )
  )
 )
+
+(define apply-store
+ (lambda (store ref)
+  (if (null? store) 
+      (eopl:error "error , invalid reference")
+      (deref store ref)
+  )
+ )
+)
+
 
 (define value-of
  (lambda (exp env store)
   (cases expression exp
     (const-exp (num) (an-answer (num-val num) store))
-    (var-exp (var) (an-answer (apply-env env var) store))
+    (var-exp (var) (an-answer (apply-store store (apply-env env var)) store))
     (diff-exp (exp1 exp2)
       (cases answer (value-of exp1 env store)
         (an-answer (val1 store1)
@@ -384,6 +514,36 @@
                     [num2 (expval->num val2)]
                    )
                 (an-answer (num-val (- num1 num2)) store2)
+             )
+           )
+         )
+       )
+      )
+    )
+    (add-exp (exp1 exp2)
+      (cases answer (value-of exp1 env store)
+        (an-answer (val1 store1)
+         (cases answer (value-of exp2 env store1)
+           (an-answer (val2 store2)
+             (let* ([num1 (expval->num val1)]
+                    [num2 (expval->num val2)]
+                   )
+                (an-answer (num-val (+ num1 num2)) store2)
+             )
+           )
+         )
+       )
+      )
+    )
+    (multiply-exp (exp1 exp2)
+      (cases answer (value-of exp1 env store)
+        (an-answer (val1 store1)
+         (cases answer (value-of exp2 env store1)
+           (an-answer (val2 store2)
+             (let* ([num1 (expval->num val1)]
+                    [num2 (expval->num val2)]
+                   )
+                (an-answer (num-val (* num1 num2)) store2)
              )
            )
          )
@@ -415,7 +575,13 @@
     (let-exp (var exp1 body)
       (cases answer (value-of exp1 env store)
         (an-answer (val1 new-store)
-          (value-of body (extend-env var val1 env) new-store)
+         (let* ([rest (newref new-store val1)]
+                [rest-ref (car rest)]
+                [rest-store (cdr rest)]
+               )
+            (value-of body (extend-env var rest-ref env) rest-store)
+         )
+         ; (value-of body (extend-env var val1 env) new-store)
         )
       )
     )
@@ -568,14 +734,105 @@
          (an-answer rest-val rest-store)
       )
     )
-   (letrec-exp (p-name bound-var p-body letrec-body)
-     (value-of letrec-body (extend-env-rec p-name bound-var p-body env) store)
+    (assign-exp (var body)
+     (cases answer (value-of body env store)
+       (an-answer (v1 store1)
+        (let* ([var-ref (apply-env env var)]
+               [rest (setref! store1 var-ref v1)]
+              )
+          (an-answer (car rest) (cdr rest))
+        )
+       )
+     )
+    )
+   (letrec-exp (p-names bound-vars p-bodies letrec-body)
+     (let* ([rest (extend-env-rec p-names bound-vars p-bodies env store)]
+            [rest-env (car rest)]
+            [rest-store (cdr rest)])
+       (value-of letrec-body rest-env rest-store)
+    )
    )
+    (not-exp (exp)
+     (cases answer (value-of exp env store)
+      (an-answer (v1 store1)
+        (let ([val (expval->bool v1)])
+           (an-answer (bool-val (not val))store1)
+        )
+      )
+     )
    )
  )
 )
+)
 
-
+; a statement does not return a value, but acts by modifying the store and by printing
+; (result-of stmt env store) = store1
+(define result-of
+ (lambda (stmt env store)
+  (cases statement stmt
+    (print-stmt (body)
+     (cases answer (value-of body env store)
+      (an-answer (v1 store1)
+          (display (expval->printable v1))
+          (display "\n")
+           store1
+      )
+     )
+    )
+    (declare-stmt (first-var vars body)
+      (let* ([vallist (map (lambda(number) (num-val 0)) (append (list first-var) vars))]
+             [rest (newref-list store vallist)]
+             [rest-list (car rest)]
+             [rest-store (cdr rest)]
+             [new-env (extend-env-with-list (append (list first-var) vars) rest-list env)]
+            )
+        (result-of body new-env rest-store)
+      )
+     )
+    (assign-stmt (var body)
+     (cases answer (value-of body env store)
+      (an-answer (v1 store1)
+        (let* ([var-ref (apply-env env var)]
+               [rest (setref! store1 var-ref v1)]
+               [rest-store (cdr rest)]
+              )
+           rest-store
+        )
+      )
+     )
+    )
+    (block-stmt (first-stmt bodies)
+       (execute-block (append (list first-stmt) bodies) env store)
+    )
+    (while-stmt (exp body)
+       (execute-while exp body env store)
+     )
+    (if-stmt (exp1 body1 body2)
+      (cases answer (value-of exp1 env store)
+        (an-answer (v1 store1)
+         (if (expval->bool v1)
+           (result-of body1 env store1)
+           (result-of body2 env store1)
+         )
+        )
+      )
+     )
+    (read-stmt (var)
+     (let ([x (read)])
+       (if (< x 0)
+         (eopl:error "read-stmt should read a nonnegative integer")
+         (let* ([rest (setref! store (apply-env env var) (num-val x))]
+                [rest-store (cdr rest)]
+               )
+            rest-store
+         )
+       )
+     )
+    )
+    (else (display "nothing"))
+  )
+ )
+)
 
 ; ----------------------------------add procedure
 
@@ -593,7 +850,11 @@
    (cases proc proc1
      ( procedure (vars body saved-env flag)
          (if flag (display "traceproc enter\n") `())
-         (let ([x (value-of body (extend-env-with-list vars vals saved-env) store)])
+         (let* ([rest (newref-list store vals)]
+               [rest-list (car rest)]
+               [rest-store (cdr rest)]
+               [x (value-of body (extend-env-with-list vars rest-list saved-env) rest-store)]
+               )
            (if flag (display "traceproc exit\n") `())
            x
          )
@@ -635,48 +896,66 @@
  )
 )
 
+(define execute-block
+ (lambda (stmt-list env store)
+   (cond
+     [(null? stmt-list) (eopl:error "stmt-list should not be empty")]
+     [(equal? (length stmt-list) 1) (result-of (car stmt-list) env store)]
+     [else
+      (let ([new-store (result-of (car stmt-list) env store)])
+        (execute-block (cdr stmt-list) env new-store)
+      )
+     ]
+   )
+  )
+ )
+
+(define execute-while
+ (lambda (exp body env store)
+  (cases answer (value-of exp env store)
+   (an-answer (v1 store1)
+     (let ([val (expval->bool v1)])
+       (if val
+         (execute-while exp body env (result-of body env store))
+         store
+       )
+     )
+   )
+  )
+ )
+)
+
 ;----------------------------------------------- run test
 
-(define test (run "
-          let x = newref(100)
-            in list(deref(x), setref(x,12), deref(x))
-"))
 
-(define test2(run "
-        let x = newref(100)
-         in let double = proc(a,b,c) list(a,b,c)
-           in (double deref(x) setref(x,12) deref(x))
+(define test1 (run "print list(1,2,3)"))
+(define test2 (run "var x; print x"))
+(define test3 (run "var x; x = 100"))
+(define test4 (run "var x; {print x}"))
+(define test5 (run "var x,y; {x = 100; print x; y = 200; print y}"))
+(define test6 (run "var x; {x = 100; if zero?(x) x = +(x,100) x=-(x,101); print x}"))
+
+(define ex1 (run "var x,y; { x =3; y =4; print +(x,y)}"))
+(define ex2 (run "var x,y,z; { x = 3;
+                               y = 4;
+                               z = 0;
+                               while not(zero?(x))
+                               { z = +(z,y); x = -(x,1)};
+                               print z
+}"))
+
+(define ex3 (run " var x ; { x = 3;
+                         print x;
+                         var x; {x = 4; print x};
+                         print x}
 ")
 )
 
-(define test3(run "
-         let x = newref(100)
-           in begin
-             setref(x,12);
-             deref(x);
-             setref(x,1234) 
-          end 
-  "
-)
+(define ex4 (run "var f,x; { f = proc(x,y) *(x,y);
+                             x = 3;
+                             print (f 4 x)}
+"
+ )
 )
 
-(define test4(run "
-         letrec double(x) =
-                 if zero?(x) then
-                    0
-                 else
-                   -( (double -(x,1))  , -2)
-         in (double 6)
- "
-))
-
-
-
-
-
-
-
-
-
-
-
+(define test7 (run "var x; {read x; print x}"))

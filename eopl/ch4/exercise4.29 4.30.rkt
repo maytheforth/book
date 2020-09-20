@@ -10,7 +10,7 @@
 ;
 (define scanner
   '((white-sp (whitespace) skip)
-    (comment (";" (arbno (not #\newline))) skip)
+    (comment ("//" (arbno (not #\newline))) skip)
     (identifier (letter (arbno (or letter digit "_" "-" "?"))) symbol)
     (number (digit (arbno digit)) number)
     (number ("-" digit (arbno digit)) number)
@@ -54,7 +54,12 @@
    (expression ("deref" "(" expression ")") deref-exp)
    (expression ("setref" "(" expression "," expression ")") setref-exp)
    (expression ("begin" expression (arbno ";" expression) "end") begin-exp)
-   (expression ("letrec" identifier "(" (separated-list identifier ",") ")" "=" expression "in" expression) letrec-exp)
+   (expression ("letrec" (arbno identifier "(" (separated-list identifier ",") ")" "=" expression ) "in" expression) letrec-exp)
+   (expression ("set" identifier "=" expression) assign-exp)
+   (expression ("newarray" "(" expression "," expression ")") newarray-exp)
+   (expression ("arrayref" "(" expression "," expression ")") arrayref-exp)
+   (expression ("arraylength" "(" expression ")") arraylength-exp)
+   (expression ("arrayset" "(" expression "," expression "," expression ")") arrayset-exp)
   )
 )
 
@@ -98,6 +103,36 @@
   )
 )
 
+; return (reflist new-store)
+(define newref-list
+ (lambda (store vallist)
+   (cond
+     [(null? vallist) (eopl:error "vallist should not be null")]
+     [(equal? (length vallist) 1)
+      (let* ([rest (newref store (car vallist))]
+             [rest-ref (car rest)]
+             [rest-store (cdr rest)]
+            )
+        (cons (list rest-ref) rest-store)
+      )
+     ]
+     [else
+       (let* ([rest-left (newref-list store (list (car vallist)))]
+              [rest-left-list (car rest-left)]
+              [rest-left-store (cdr rest-left)]
+              [rest-right (newref-list rest-left-store (cdr vallist))]
+              [rest-right-store (cdr rest-right)]
+              [rest-right-list (car rest-right)]
+             )
+          (cons (append rest-left-list rest-right-list) rest-right-store)
+       )
+     ]
+   )
+ )
+)
+
+
+
 (define deref
  (lambda (store n)
    (if (reference? n)
@@ -126,14 +161,32 @@
   )
 )
 
+(define setref!-list
+ (lambda (store reflist vallist)
+  (cond
+    [(null? reflist) (eopl:error "error, reflist should not be null")]
+    [(equal? (length reflist) 1) (setref! store (car reflist) (car vallist))]
+    [else
+      (let* ([rest (setref! store (car reflist) (car vallist))]
+             [rest-store (cdr rest)]
+            )
+        (setref!-list rest-store (cdr reflist) (cdr vallist))
+      )
+   ]
+  )
+ )
+)
 
 ;------------------------------------------define env
 (define-datatype environment environment?
  (empty-env)
  (extend-env
-   (var symbol?)
+   (var (lambda (var)
+     (or (symbol? var) ((list-of symbol?) var))
+     )
+   ) 
    (val (lambda (val)
-        (or (expval? val) (vector? val))
+        (or (reference? val) ((list-of reference?) val))
     )
    )
    (env environment?)
@@ -141,16 +194,42 @@
 )
 
 
+;(define extend-env-rec
+; (lambda (p-name b-var body saved-env)
+;   (let ([vec (make-vector 1)])
+;     (let ([new-env (extend-env p-name vec saved-env)])
+;       (vector-set! vec 0 (proc-val (procedure b-var body new-env #f)))
+;       new-env
+;     )
+;   )
+; )
+;)
+
 (define extend-env-rec
- (lambda (p-name b-var body saved-env)
-   (let ([vec (make-vector 1)])
-     (let ([new-env (extend-env p-name vec saved-env)])
-       (vector-set! vec 0 (proc-val (procedure b-var body new-env #f)))
-       new-env
-     )
+ (lambda (p-names b-vars bodies saved-env store)
+   (let* ([vals (map (lambda (bound-var proc-body) (proc-val (procedure bound-var proc-body saved-env #f))) b-vars bodies)]
+          [rest (newref-list store vals)]
+          [rest-list (car rest)]
+          [rest-store (cdr rest)]
+          [new-env (extend-env p-names rest-list saved-env)]
+          [new-vals (map (lambda (bound-var proc-body) (proc-val (procedure bound-var proc-body new-env #f))) b-vars bodies)]
+          [new-store (cdr (setref!-list rest-store rest-list new-vals))]
+          )
+      (cons new-env new-store)
    )
  )
 )
+
+(define proc-search
+ (lambda (varlist search-val index)
+   (cond
+     [(null? varlist) #f]
+     [(equal? (car varlist) search-val) index]
+     [else (proc-search (cdr varlist) search-val (+ 1 index))]
+   )
+ )
+)
+
 
 
 
@@ -159,14 +238,23 @@
    (cases environment env
      (empty-env () (display "error, found no such var"))
      (extend-env (saved-var saved-val saved-env)
-       (if (equal? saved-var search-var)
-             (if (vector? saved-val)
-                 (vector-ref saved-val 0)
-                 saved-val
-             )
-            (apply-env saved-env search-var)
-        )
-      )
+       (cond
+          [(list? saved-var)
+            (let ([ret (proc-search saved-var search-var 0)])
+              (if (equal? ret #f)
+                (apply-env saved-env search-var)
+                ret
+              )
+            )
+          ]
+          [else
+            (if (equal? saved-var search-var)
+                saved-val
+                (apply-env saved-env search-var)
+            )
+          ]
+       )
+     )
    )
  )
 )
@@ -175,6 +263,66 @@
 (define init-env
  (lambda()
    (empty-env)
+ )
+)
+
+;----------------------------------------- array ---------------------------------------------
+(define-datatype arrval arrval?
+ (a-array
+  (arrlen integer?)
+  (arrloc reference?)
+ )
+)
+
+(define newarray
+ (lambda (store size val)
+  (let* ([valvector (make-vector size val)]
+         [vallist (vector->list valvector)]
+         [rest (newref-list store vallist)]
+         [rest-store (cdr rest)]
+         [rest-list (car rest)]
+        )
+    (cons (a-array size (car rest-list)) rest-store)
+  )
+ )
+)
+
+(define arraylength
+ (lambda (v)
+  (cases arrval v
+    (a-array (arrlen arrloc) arrlen)
+  )
+ )
+)
+
+; test the boundary
+(define arrayref
+ (lambda (store v ref)
+  (cases arrval v
+    (a-array (arrlen arrloc)
+      (if (< ref arrlen)
+         (apply-store store (+ ref arrloc))
+         (eopl:error "error, array index out of boundary")
+      )
+    )
+  )
+ )
+)
+
+(define arrayset
+ (lambda (store v ref new-val)
+  (cases arrval v
+   (a-array (arrlen arrloc)
+     ( if (and (>= ref 0) (< ref arrlen))
+        (let* ([rest (setref! store ref new-val)]
+               [rest-store (cdr rest)]
+              )
+          (cons (num-val 1) rest-store)
+        )
+        (eopl:error "error, array index out of boundary")
+        )
+   )
+  )
  )
 )
 
@@ -210,7 +358,12 @@
  (deref-exp (value expression?))
  (setref-exp (ref expression?) (value expression?))
  (begin-exp (first expression?) (second (list-of expression?)))
- (letrec-exp (p-name symbol?) (bound-var (list-of symbol?)) (p-body expression?) (letrec-body expression?))
+ (letrec-exp (p-names (list-of symbol?)) (bound-vars (list-of (list-of symbol?))) (p-bodies (list-of expression?)) (letrec-body expression?))
+ (assign-exp (var symbol?) (body expression?))
+ (newarray-exp (size expression?) (val expression?))
+ (arrayref-exp (var expression?) (ref expression?))
+ (arrayset-exp (var expression?) (ref expression?) (new-val expression?))
+ (arraylength-exp (var expression?))
 )
 
 
@@ -221,6 +374,7 @@
  (emptylist-val)
  (proc-val (proc proc?))
  (ref-val (ref reference?))
+ (arr-val (arr arrval?))
 )
 
 (define store?
@@ -292,6 +446,16 @@
    )
  )
 )
+
+(define expval->arr
+ (lambda (val)
+  (cases expval val
+    (arr-val (arr) arr)
+    (else (eopl:error "error type to array"))
+  )
+ )
+)
+
 
 ; expval -> bool
 (define expval->bool
@@ -370,11 +534,21 @@
  )
 )
 
+(define apply-store
+ (lambda (store ref)
+  (if (null? store) 
+      (eopl:error "error , invalid reference")
+      (deref store ref)
+  )
+ )
+)
+
+
 (define value-of
  (lambda (exp env store)
   (cases expression exp
     (const-exp (num) (an-answer (num-val num) store))
-    (var-exp (var) (an-answer (apply-env env var) store))
+    (var-exp (var) (an-answer (apply-store store (apply-env env var)) store))
     (diff-exp (exp1 exp2)
       (cases answer (value-of exp1 env store)
         (an-answer (val1 store1)
@@ -415,7 +589,13 @@
     (let-exp (var exp1 body)
       (cases answer (value-of exp1 env store)
         (an-answer (val1 new-store)
-          (value-of body (extend-env var val1 env) new-store)
+         (let* ([rest (newref new-store val1)]
+                [rest-ref (car rest)]
+                [rest-store (cdr rest)]
+               )
+            (value-of body (extend-env var rest-ref env) rest-store)
+         )
+         ; (value-of body (extend-env var val1 env) new-store)
         )
       )
     )
@@ -568,11 +748,86 @@
          (an-answer rest-val rest-store)
       )
     )
-   (letrec-exp (p-name bound-var p-body letrec-body)
-     (value-of letrec-body (extend-env-rec p-name bound-var p-body env) store)
+    (assign-exp (var body)
+     (cases answer (value-of body env store)
+       (an-answer (v1 store1)
+        (let* ([var-ref (apply-env env var)]
+               [rest (setref! store1 var-ref v1)]
+              )
+          (an-answer (car rest) (cdr rest))
+        )
+       )
+     )
+    )
+   (letrec-exp (p-names bound-vars p-bodies letrec-body)
+     (let* ([rest (extend-env-rec p-names bound-vars p-bodies env store)]
+            [rest-env (car rest)]
+            [rest-store (cdr rest)])
+       (value-of letrec-body rest-env rest-store)
+    )
    )
+   (newarray-exp (size val)
+     (cases answer (value-of size env store)
+       (an-answer (size-val store1)
+         (cases answer (value-of val env store1)
+           (an-answer (store-val store2)
+             (let* ([rest (newarray store2 (expval->num size-val) store-val )]
+                    [rest-val (car rest)]
+                    [rest-store (cdr rest)]
+                   )
+                (an-answer (arr-val rest-val) rest-store)
+             )
+           )
+        )
+      )
+     )
+   )
+   (arrayref-exp (var ref)
+     (cases answer (value-of var env store)
+       (an-answer (val1 store1)
+         (cases answer (value-of ref env store1)
+           (an-answer (val2 store2)
+             (an-answer (arrayref store2 (expval->arr val1) (expval->num val2)) store2)
+           ) 
+         )
+       )
+     )
+   )
+   (arraylength-exp (var)
+    ;(let* ([rest (value-of var env store)]
+    ;       [rest-val (car rest)]
+    ;       [rest-store (cdr rest)]
+    ;      )
+    ;  (an-answer (num-val (arraylength rest-val)) rest-store)
+    ;)
+    (cases answer (value-of var env store)
+      (an-answer (val1 store1)
+        (an-answer (num-val (arraylength (expval->arr val1))) store1)
+      )
+    )
+   )
+   (arrayset-exp (var ref new-val)
+    (cases answer (value-of var env store)
+      (an-answer (val1 store1)
+        (cases answer (value-of ref env store1)
+          (an-answer (val2 store2)
+            (cases answer (value-of new-val env store2)
+              (an-answer (val3 store3)
+                (let* ([rest (arrayset store3 (expval->arr val1) (expval->num val2) val3)]
+                       [rest-val (car rest)]
+                       [rest-store (cdr rest)]
+                      )
+                   (an-answer rest-val rest-store)
+                )
+              )
+            )
+          )
+        )
+      )
+    )
    )
  )
+)
 )
 
 
@@ -593,7 +848,11 @@
    (cases proc proc1
      ( procedure (vars body saved-env flag)
          (if flag (display "traceproc enter\n") `())
-         (let ([x (value-of body (extend-env-with-list vars vals saved-env) store)])
+         (let* ([rest (newref-list store vals)]
+               [rest-list (car rest)]
+               [rest-store (cdr rest)]
+               [x (value-of body (extend-env-with-list vars rest-list saved-env) rest-store)]
+               )
            (if flag (display "traceproc exit\n") `())
            x
          )
@@ -638,43 +897,29 @@
 ;----------------------------------------------- run test
 
 (define test (run "
-          let x = newref(100)
-            in list(deref(x), setref(x,12), deref(x))
+                    let a = newarray(2,-99)
+                     in let p = proc(x)
+                          let v = arrayref(x,1)
+                          in arrayset(x,1,-(v,-1))
+                    in begin arrayset(a,1,0); (p a); (p a); arrayref(a,1) end
 "))
 
-(define test2(run "
-        let x = newref(100)
-         in let double = proc(a,b,c) list(a,b,c)
-           in (double deref(x) setref(x,12) deref(x))
+
+(define test2 (run "
+                 let a = newarray(3,-99)
+                  in begin
+                      arraylength(a)
+                    end
+ ")
+)
+
+(define test3 (run "
+                  let a = newarray(2,-99)
+                  in begin
+                       arrayset(a,2,0)
+                     end
 ")
 )
-
-(define test3(run "
-         let x = newref(100)
-           in begin
-             setref(x,12);
-             deref(x);
-             setref(x,1234) 
-          end 
-  "
-)
-)
-
-(define test4(run "
-         letrec double(x) =
-                 if zero?(x) then
-                    0
-                 else
-                   -( (double -(x,1))  , -2)
-         in (double 6)
- "
-))
-
-
-
-
-
-
 
 
 
